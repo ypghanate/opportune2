@@ -51,47 +51,8 @@ export default function CheckIn({ path }) {
     });
   }, [due, canPing]);
 
-  // A new programme the agent found: ping once (not every 30 minutes) because it is good news, not a nag.
-  useEffect(() => {
-    if (canPing !== "granted") return;
-    asks.filter((q) => q.kind === "opportunity").forEach((q) => {
-      if (pinged.current[`o${q.id}`]) return;
-      pinged.current[`o${q.id}`] = Date.now();
-      try { new Notification("New opportunity detected", { body: `${q.message.replace("New opportunity detected: ", "")}`, tag: `opp-${q.id}` }); } catch { /* not allowed here */ }
-    });
-  }, [asks, canPing]);
-
   const current = due[0];
   const ask = !current ? asks[0] : null;
-  const oppOf = (q) => { try { return JSON.parse(q.data || "{}"); } catch { return {}; } };
-
-  async function planIt() {
-    setBusy("plan");
-    setMsg(null);
-    try {
-      const id = oppOf(ask).opportunity_id;
-      const r = await api.approve([id]);
-      await api.answerQuestion(ask.id, "Planned").catch(() => {});
-      setAsks((list) => list.filter((q) => q.id !== ask.id));
-      if (!(r?.booked || []).includes(id)) setMsg({ ok: false, text: "There was no free slot before its deadline, so I could not book it. It stays in My opportunities." });
-    } catch (e) {
-      setMsg({ ok: false, text: e.message });
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function notThis() {
-    setBusy("skip");
-    setMsg(null);
-    try {
-      await api.skipOpportunity(oppOf(ask).opportunity_id).catch(() => {});
-      await api.answerQuestion(ask.id, "Skipped").catch(() => {});
-      setAsks((list) => list.filter((q) => q.id !== ask.id));
-    } finally {
-      setBusy("");
-    }
-  }
 
   const optionsOf = (q) => { try { return JSON.parse(q.data || "{}").options || []; } catch { return []; } };
   const whyOf = (q) => { try { return JSON.parse(q.data || "{}").reason || ""; } catch { return ""; } };
@@ -181,24 +142,7 @@ export default function CheckIn({ path }) {
             </div>
           </>
         )}
-        {ask && ask.kind === "opportunity" && (
-          <>
-            <div className="checkin-text" style={{ "--co": "var(--accent)" }}>
-              <strong>{ask.message.split(". ")[0].replace(/\.$/, "")}</strong>
-              <span>{ask.message.split(". ").slice(1).join(". ")}</span>
-              {oppOf(ask).match && <span className="app-kind">{oppOf(ask).match} match</span>}
-            </div>
-            <div className="checkin-actions">
-              <button className="pill pill-solid pill-sm" disabled={!!busy} onClick={planIt}>{busy === "plan" ? "Planning…" : "Yes, plan it"}</button>
-              <button className="pill pill-sm" disabled={!!busy} onClick={notThis}>{busy === "skip" ? "Saving…" : "Not for me"}</button>
-              {oppOf(ask).url && <a className="link" href={oppOf(ask).url} target="_blank" rel="noopener noreferrer">View listing ↗</a>}
-              <a className="link" href="#/opportunities">See all</a>
-              {asks.filter((q) => q.kind === "opportunity").length > 1 && <small className="muted">{asks.filter((q) => q.kind === "opportunity").length - 1} more new</small>}
-              {canPing === "default" && <button className="link" onClick={() => Notification.requestPermission().then(setCanPing)}>Notify me when one appears</button>}
-            </div>
-          </>
-        )}
-        {ask && ask.kind !== "ask" && ask.kind !== "opportunity" && (
+        {ask && ask.kind !== "ask" && (
           <>
             <div className="checkin-text" style={{ "--co": ask.colour }}>
               <strong>{ask.message.split(".")[0]}.</strong>
