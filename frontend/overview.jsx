@@ -11,7 +11,7 @@ const WHAT = [
 const AUTO = [
   ["Thinks for itself", "The Planner Agent reads your whole situation: deadlines, exams, what you've finished. It decides what matters most, acts, and tells you why. When it isn't sure, it asks you."],
   ["Repairs clashes", "Add a lecture, shift or society event, even on another calendar. If it lands on one of your blocks, the agent moves that block to the next free slot. Interviews are never moved."],
-  ["Watches for new openings", "It waits on programmes that haven't opened yet and searches again every week using your interests. When one opens, it books time to apply."],
+  ["Watches for new openings", "It waits on programmes that haven't opened yet and looks again every hour, and searches for new ones every 2 hours using your interests. When one opens, it books time to apply."],
   ["Reschedules when you go quiet", "After each block it asks whether you applied or did your practice. Say no, or don't answer, and it finds a new slot."],
   ["Chases you", "When a block ends, it asks whether you did it. No answer? It nudges you again and again, then books it for you once more."],
 ];

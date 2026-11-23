@@ -11,6 +11,7 @@ import MyOpportunities from "./opps.jsx";
 import Calendar from "./calendar.jsx";
 import Applications from "./applications.jsx";
 import CheckIn from "./checkin.jsx";
+import AgentBar from "./agentbar.jsx";
 import "./style.css";
 
 const PROTECTED = ["/find", "/opportunities", "/applications", "/calendar", "/profile"];
@@ -48,6 +49,7 @@ function App() {
   return (
     <>
       <Nav path={route} authed={authed} onSignOut={signOut} />
+      {authed && PROTECTED.includes(route) && <AgentBar />}
       {authed && PROTECTED.includes(route) && <CheckIn path={route} />}
       {authed && PROTECTED.includes(route) && <DashHeader path={route} />}
       {pages[route] ?? <Overview authed={authed} />}

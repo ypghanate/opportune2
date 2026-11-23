@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field, field_validator
 import json
 from typing import Literal
 
+_bg: set = set()  # keeps follow-up tasks alive until they finish
+
 import autopilot
 import planner
 import calendar_api
@@ -265,6 +267,9 @@ async def search(body: SearchIn, user=Depends(current_user)):
     repeats = len(result["items"]) - len(fresh)
     if repeats:
         message += f"\n\n{repeats} of what the agent found {'was' if repeats == 1 else 'were'} already in My opportunities, so not shown again."
+    if autopilot.FOLLOW_UP_MIN > 0:
+        _bg.add(t := asyncio.create_task(autopilot.follow_up(user["id"])))  # looks again in a couple of minutes
+        t.add_done_callback(_bg.discard)
     return {"items": [view(r) for r in rows], "message": message}
 
 
@@ -363,10 +368,35 @@ def agent_status(user=Depends(current_user)):
     return autopilot.status(user["id"])
 
 
+@app.get("/api/agent/pulse")
+def agent_pulse(user=Depends(current_user)):
+    """Small and cheap: the 'agent is awake' bar polls this every 20 seconds."""
+    return autopilot.pulse(user["id"])
+
+
 @app.get("/api/agent/questions")
 def agent_questions(user=Depends(current_user)):
     """Things the agent is waiting for an answer on, e.g. 'Have you heard anything from Barclays?'."""
-    return db.get_open_questions(user["id"])
+    out = []
+    for q in db.get_open_questions(user["id"]):
+        if q["kind"] == "opportunity":  # the student already dealt with it elsewhere, or the planner started it: close the question
+            opp_id = json.loads(q["data"] or "{}").get("opportunity_id")
+            rows = db.get_opportunities(user["id"], [opp_id]) if opp_id else []
+            if not rows or rows[0]["status"] != "pending":
+                db.answer_log(user["id"], q["id"], "done", "handled")
+                continue
+        out.append(q)
+    return out
+
+
+@app.post("/api/opportunities/{opp_id}/skip")
+def skip_opportunity(opp_id: int, user=Depends(current_user)):
+    """'Not for me': keeps it in My opportunities, marked skipped, and the agent stops asking about it."""
+    rows = db.get_opportunities(user["id"], [opp_id])
+    if not rows or rows[0]["status"] != "pending":
+        raise HTTPException(404, "That opportunity is not waiting for approval.")
+    db.update_opportunity(user["id"], opp_id, status="skipped")
+    return {"ok": True}
 
 
 class AnswerIn(BaseModel):

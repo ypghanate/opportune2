@@ -492,6 +492,17 @@ _US = {"us", "usa", "unitedstates", "unitedstatesofamerica", "america"}
 _ANYWHERE = {"", "unknown", "online", "virtual", "remote", "multiple", "global", "worldwide", "international", "various", "europe", "emea"}
 
 
+_ABROAD = re.compile(r"\b(china|chinese|beijing|shanghai|shenzhen|guangzhou|hong kong|singapore|india|mumbai|bangalore|bengaluru|delhi|japan|tokyo|korea|seoul|taiwan|dubai|uae|"
+                     r"united states|usa|new york|chicago|boston|san francisco|silicon valley|canada|toronto|australia|sydney|melbourne|germany|frankfurt|berlin|munich|france|paris|"
+                     r"switzerland|zurich|geneva|netherlands|amsterdam|ireland|dublin|brazil|mexico|south africa|johannesburg|emea\s+excluding)\b", re.I)
+
+
+def _abroad(*texts) -> str:
+    """A non-UK place named in the text, when the programme's country field was left 'Unknown' or 'Multiple'."""
+    m = _ABROAD.search(" ".join(str(t or "") for t in texts))
+    return m.group(1) if m else ""
+
+
 def _country_key(value) -> str:
     v = re.sub(r"[^a-z]", "", str(value or "").lower())
     return "uk" if v in _UK else "us" if v in _US else v
@@ -735,6 +746,10 @@ Also list 30 to 40 real employers, names only, that run the wanted programme typ
         country = _country_key(c.country)
         if not c.online and country not in _ANYWHERE and country != my_country:
             dropped[f"outside {student_country}"] += 1
+            continue
+        if not c.online and my_country == "uk" and country in _ANYWHERE and not re.search(r"\b(uk|london|united kingdom|england|scotland|wales|manchester|edinburgh)\b", str(c.location), re.I) \
+                and _abroad(c.location):
+            dropped[f"outside {student_country}"] += 1  # the country field was vague, the location names a place abroad
             continue
         if "specific_universities" in c.restricted_to and c.universities_allowed and my_uni and \
                 not any(_norm(u) and (_norm(u) in my_uni or my_uni in _norm(u)) for u in c.universities_allowed):

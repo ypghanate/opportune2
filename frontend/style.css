@@ -277,3 +277,15 @@ a.dh-stat:hover { outline: 1px solid var(--accent); }
 .status-list li.main { font-size: 1.3rem; line-height: 1.4; color: var(--text); padding-bottom: 14px; margin-bottom: 4px; border-bottom: 1px solid var(--pill); grid-template-columns: 14px 1fr; }
 .status-list li.main strong { color: var(--accent); font-size: 1.55rem; font-weight: 600; display: block; margin-bottom: 4px; }
 .status-list li.main .status-dot { width: 12px; height: 12px; }
+
+/* agent-is-awake bar */
+.agentbar { background: var(--pill); border-bottom: 1px solid rgba(95, 208, 143, 0.18); font-size: 0.9rem; }
+.agentbar-in { display: flex; align-items: center; gap: 10px; padding-block: 8px; min-height: 38px; }
+.agentbar-name { font-weight: 700; color: var(--accent); }
+.agentbar-text { color: var(--muted); animation: agentfade 0.5s ease; }
+.agentbar-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 0 rgba(95, 208, 143, 0.6); animation: agentpulse 2s infinite; flex: none; }
+.agentbar.asleep .agentbar-dot { background: #7a8a80; animation: none; }
+.agentbar.asleep .agentbar-name { color: #9fb1a6; }
+@keyframes agentpulse { 70% { box-shadow: 0 0 0 9px rgba(95, 208, 143, 0); } 100% { box-shadow: 0 0 0 0 rgba(95, 208, 143, 0); } }
+@keyframes agentfade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .agentbar-dot, .agentbar-text { animation: none; } }

@@ -11,6 +11,7 @@ Everything it does is written to the agent log, so the student can see what happ
 """
 import asyncio
 import json
+import re
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -23,16 +24,18 @@ import runner
 log = logging.getLogger("uvicorn.error")
 FIXED_KINDS_UI = ("interview", "assessment_centre")
 LONDON = ZoneInfo("Europe/London")
-INTERVAL_MIN = int(os.environ.get("AGENT_INTERVAL_MIN", "15"))  # 0 turns the background loop off
+INTERVAL_MIN = int(os.environ.get("AGENT_INTERVAL_MIN", "5"))  # 0 turns the background loop off
 SILENCE_HOURS = 24  # no answer to "did you do it?" for this long counts as "no"
-WATCH_EVERY_HOURS = 20
+WATCH_EVERY_HOURS = float(os.environ.get("WATCH_EVERY_HOURS", "1"))  # how often a programme that has not opened yet is looked at
 NUDGE_AFTER_MIN = 30  # a finished block with no answer gets its first nudge after this long
 NUDGE_EVERY_HOURS = 4  # and another this often, until the silence rule rebooks it
 CHASE_AFTER_DAYS = 6
-DISCOVER_EVERY_DAYS = int(os.environ.get("AUTO_DISCOVERY_DAYS", "7"))  # 0 turns automatic searching off
+DISCOVER_EVERY_HOURS = float(os.environ.get("AUTO_DISCOVERY_HOURS", "2"))  # how often it searches for new programmes; 0 turns automatic searching off
+FOLLOW_UP_MIN = float(os.environ.get("SEARCH_FOLLOW_UP_MIN", "2"))  # after a student runs a search, look again this many minutes later; 0 = off
 MAX_AUTO_PLANS = 3  # new programmes the agent may book on its own per search
 
 _locks: dict[int, asyncio.Lock] = {}
+loop_beat: dict = {}  # when the background loop last went round (proof it is awake)
 last_pass: dict[int, str] = {}  # when each student's last pass finished (in memory: the Applications page shows it)
 
 
@@ -230,12 +233,38 @@ async def _watch(user_id: int, call, summary: dict, force: bool = False):
             db.update_opportunity(user_id, row["id"], patch=patch)
 
 
+MAX_ANNOUNCE = 5  # most "new opportunity" questions open at once, so a big search does not flood the banner
+
+
+def _announce(user_id: int, rows: list[dict]) -> int:
+    """Asks the student about each new programme still waiting for approval: "New opportunity detected. Want me to plan it?"
+    One open question per programme, never asked twice. The banner shows it with Plan it / Not for me buttons."""
+    open_now = sum(1 for q in db.get_open_questions(user_id) if q["kind"] == "opportunity")
+    made = 0
+    for r in rows:
+        if open_now + made >= MAX_ANNOUNCE:
+            break
+        d = json.loads(r["data"])
+        if r["status"] != "pending" or db.log_exists(user_id, "opportunity", f'"opportunity_id": {r["id"]},'):
+            continue
+        place = f'{d.get("country") or ""} {d.get("location") or ""}'
+        if re.search(r"\b(china|beijing|shanghai|shenzhen|hong kong|singapore|india|japan|tokyo|korea|dubai|new york|usa|united states|canada|australia|germany|france|switzerland)\b", place, re.I) \
+                and not re.search(r"\b(uk|united kingdom|london|england|scotland|wales|online|remote)\b", place, re.I):
+            continue  # abroad: never ask the student about it
+        when = _parse(d.get("deadline"))
+        closes = f" It closes {when.astimezone(LONDON).strftime('%a %d %b')}." if when else ""
+        db.log_action(user_id, "opportunity", f"New opportunity detected: {d.get('title') or d.get('company')}.{closes} Want me to plan it?", None, status="open",
+                      data={"opportunity_id": r["id"], "company": d.get("company"), "title": d.get("title"), "match": d.get("match"), "url": d.get("url")})
+        made += 1
+    return made
+
+
 async def _discover(user_id: int, profile: dict, summary: dict, force: bool = False, auto_plan: bool = True):
     """Once a week: search again, save what is new, and book the clearly good, open ones on its own (a few at most)."""
-    if not force and (not DISCOVER_EVERY_DAYS or not profile.get("autopilot", True)):
+    if not force and (not DISCOVER_EVERY_HOURS or not profile.get("autopilot", True)):
         return
     last = _parse(db.last_log_time(user_id, "discover"))
-    if not force and last and datetime.now(timezone.utc) - last < timedelta(days=DISCOVER_EVERY_DAYS):
+    if not force and last and datetime.now(timezone.utc) - last < timedelta(hours=DISCOVER_EVERY_HOURS):
         return
     started = _parse(db.last_log_time(user_id, "discover_start"))
     if not force and started and (not last or started > last) and datetime.now(timezone.utc) - started < timedelta(hours=6):
@@ -274,6 +303,9 @@ async def _discover(user_id: int, profile: dict, summary: dict, force: bool = Fa
         text += f" I am watching {watching} that have not opened yet."
     db.log_action(user_id, "discover", text)
     summary["discovered"] = len(fresh)
+    asked = _announce(user_id, sorted(db.get_opportunities(user_id, ids), key=lambda r: ids.index(r["id"])))  # best first; the booked ones are no longer pending
+    if asked:
+        summary["announced"] = asked
 
 
 # ---------------------------------------------------------------- what the agent is doing right now (for the Applications page)
@@ -292,8 +324,8 @@ def status(user_id: int) -> list[dict]:
     out = []
     if planner.ENABLED:
         st = db.get_planner_state(user_id)
-        out.append({"key": "planner", "on": st.get("mode") != "rules", "title": "Planner",
-                    "text": ("I read your whole plan, decide what needs doing and act on it. " + (f"Last looked at {clock(st['ran_at'])}." if st.get("ran_at") else "I will look as soon as something changes."))
+        out.append({"key": "planner", "on": st.get("mode") != "rules", "title": "Planner Agent",
+                    "text": ("I read your whole plan, decide what needs doing and act on it, all by myself. " + (f"Last looked at {clock(st['ran_at'])}." if st.get("ran_at") else "I will look as soon as something changes."))
                     if st.get("mode") != "rules" else "The planner hit a problem, so I am using simple rules for now."})
 
     ahead = [b for b in db.blocks_with_app(user_id, ("planned",)) if b["event_id"] and b["start"] > now.isoformat()]
@@ -310,11 +342,12 @@ def status(user_id: int) -> list[dict]:
                          + (f" Last looked at {clock(last_watch.isoformat())}." if last_watch else "")) if watching
                 else "No programmes waiting to open. When a search finds one that is not open yet, I watch it for you."})
 
-    if DISCOVER_EVERY_DAYS:
+    if DISCOVER_EVERY_HOURS:
         last = _parse(db.last_log_time(user_id, "discover"))
-        nxt = (last + timedelta(days=DISCOVER_EVERY_DAYS)).astimezone(LONDON).strftime("%a %d %b") if last else "soon"
+        nxt = (last + timedelta(hours=DISCOVER_EVERY_HOURS)).astimezone(LONDON).strftime("%H:%M") if last else "soon"
+        every = f"{DISCOVER_EVERY_HOURS:g} hour{'s' * (DISCOVER_EVERY_HOURS != 1)}"
         out.append({"key": "discover", "on": True, "title": "New programmes",
-                    "text": f"Searching again every {DISCOVER_EVERY_DAYS} days using your interests. Next search: {nxt}."})
+                    "text": f"Searching again every {every} using your interests, and asking you before I plan anything. Next search: {nxt}."})
 
     due = db.blocks_with_app(user_id, ("due",))
     out.append({"key": "nudge", "on": True, "title": "Check-ins",
@@ -329,7 +362,7 @@ def status(user_id: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------- the loop
-async def tick(user_id: int, force: bool = False) -> dict:
+async def tick(user_id: int, force: bool = False, follow_up: bool = False) -> dict:
     """One pass for one student. Returns what it did, e.g. {'moved': 1}. Safe to call at any time."""
     import planner  # here, not at the top: planner imports this module
     profile, _ = db.get_profile(user_id)
@@ -354,13 +387,17 @@ async def tick(user_id: int, force: bool = False) -> dict:
                 log.exception("Planner failed for user %s: falling back to the fixed steps", user_id)
                 db.save_planner_state(user_id, assessment=db.get_planner_state(user_id).get("assessment") or "", concerns=[], mode="rules")
                 summary["planner_failed"] = str(e)[:120]
-        steps = (_silence, _chase) if planned_by_ai else (_clashes, _silence, _chase, _watch)
+        steps = (_silence, _chase, _watch) if planned_by_ai else (_clashes, _silence, _chase, _watch)
+        if follow_up:  # the look two minutes after a student's own search: watched programmes are checked now, whatever their timer says
+            async def _watch_now(uid, call, summ):
+                await _watch(uid, call, summ, force=True)
+            steps = tuple(_watch_now if st is _watch else st for st in steps)
         has_future = any(b["event_id"] and b["start"] > now.isoformat() for b in db.blocks_with_app(user_id, ("planned",)))
         due = bool(db.stale_due_blocks(user_id, SILENCE_HOURS))
         quiet = any((_parse(a["updated_at"]) or now) <= now - timedelta(days=CHASE_AFTER_DAYS) for a in db.applied_applications(user_id))
         watching = any(not (c := _parse(json.loads(w["data"]).get("watch_checked_at"))) or now - c >= timedelta(hours=WATCH_EVERY_HOURS)
                        for w in db.get_watching(user_id))
-        if (due or quiet) if planned_by_ai else (has_future or due or quiet or watching):
+        if (due or quiet or watching or follow_up) if planned_by_ai else (has_future or due or quiet or watching or follow_up):
             try:
                 async with runner.tool_session(user_id) as call:
                     for step in steps:  # clashes first: a moved block must not be rebooked twice
@@ -381,7 +418,7 @@ async def tick(user_id: int, force: bool = False) -> dict:
             except Exception:
                 log.exception("Autopilot nudge failed for user %s", user_id)
         try:
-            await _discover(user_id, profile, summary, auto_plan=not planned_by_ai)
+            await _discover(user_id, profile, summary, force=follow_up, auto_plan=not planned_by_ai)
         except Exception:
             log.exception("Autopilot search failed for user %s", user_id)
         last_pass[user_id] = datetime.now(timezone.utc).isoformat()
@@ -390,16 +427,52 @@ async def tick(user_id: int, force: bool = False) -> dict:
     return summary
 
 
+def pulse(user_id: int) -> dict:
+    """What the 'agent is awake' bar shows: is the loop alive, when it last looked, when it looks next, and what it is doing."""
+    import planner
+    now = datetime.now(timezone.utc)
+    beat = _parse(loop_beat.get("at"))
+    awake = bool(INTERVAL_MIN) and bool(beat) and (now - beat) < timedelta(minutes=INTERVAL_MIN * 2 + 2)
+    last = _parse(last_pass.get(user_id))
+    lock = _locks.get(user_id)
+    from runner import active_run_for
+    doing = "searching" if active_run_for(user_id) else "thinking" if (lock and lock.locked()) else "idle"
+    watching = len(db.get_watching(user_id))
+    last_s = _parse(db.last_log_time(user_id, "discover"))
+    last_w = max((c for c in (_parse(json.loads(w["data"]).get("watch_checked_at")) for w in db.get_watching(user_id)) if c), default=None)
+    def nxt(t, hours):
+        return (t + timedelta(hours=hours)).isoformat() if t and hours else None
+    return {"awake": awake, "doing": doing, "watching": watching, "planner": bool(planner.ENABLED),
+            "every_min": INTERVAL_MIN, "last_look": last.isoformat() if last else None,
+            "next_look": (last + timedelta(minutes=INTERVAL_MIN)).isoformat() if last and INTERVAL_MIN else None,
+            "next_search": nxt(last_s, DISCOVER_EVERY_HOURS), "next_watch": nxt(last_w, WATCH_EVERY_HOURS), "now": now.isoformat()}
+
+
+async def follow_up(user_id: int):
+    """Two minutes after a student runs a search, look again: new programmes and the ones being watched."""
+    if FOLLOW_UP_MIN <= 0:
+        return
+    await asyncio.sleep(FOLLOW_UP_MIN * 60)
+    for _ in range(5):  # a pass may be running: try again shortly rather than skip
+        r = await tick(user_id, follow_up=True)
+        if r.get("skipped") != "already running":
+            return
+        await asyncio.sleep(30)
+
+
 async def run_forever():
     """Started with the app. Waits a minute so start-up is quick, then goes round every connected student."""
     if INTERVAL_MIN <= 0:
         log.info("Autopilot loop is off (AGENT_INTERVAL_MIN=0)")
         return
+    loop_beat["at"] = datetime.now(timezone.utc).isoformat()
     await asyncio.sleep(60)
     while True:
+        loop_beat["at"] = datetime.now(timezone.utc).isoformat()
         for user_id in db.users_for_autopilot():
             try:
                 await tick(user_id)
             except Exception:
                 log.exception("Autopilot tick failed for user %s", user_id)
+        loop_beat["at"] = datetime.now(timezone.utc).isoformat()
         await asyncio.sleep(INTERVAL_MIN * 60)
