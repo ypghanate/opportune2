@@ -37,6 +37,7 @@ NUDGE_COOLDOWN_HOURS = 2
 QUIET_FROM, QUIET_TO = 22, 8     # London hours with no nudges
 STARTS_PER_DAY = 3               # programmes it may start without asking
 MAX_OPEN_QUESTIONS = 2
+MAX_REVIEWS_PER_PASS = 5
 LOOKAHEAD_DAYS = 14
 CLOSED = ("offer", "rejected", "withdrawn")
 FIXED = ("interview", "assessment_centre")
@@ -84,10 +85,13 @@ def build_snapshot(user_id: int, now: datetime, events: list[dict]) -> tuple[dic
     opportunities = db.get_opportunities(user_id)
     pending = []
     for o in opportunities:
-        if o["status"] == "pending":
+        if o["status"] == "pending" and not db.log_exists(user_id, "opportunity", f'"opportunity_id": {o["id"]},'):  # not yet suggested (or passed on) to the student
             d = json.loads(o["data"])
-            pending.append({"opportunity_id": o["id"], "company": d.get("company"), "title": d.get("title"), "match": d.get("match"), "open": d.get("open_status"),
-                            "deadline": _local(d.get("deadline")) or None})
+            pending.append({"opportunity_id": o["id"], "company": d.get("company"), "title": d.get("title"), "kind": d.get("type"), "field": d.get("field"),
+                            "match": d.get("match"), "score": d.get("score"), "why_the_researcher_picked_it": d.get("why"),
+                            "location": "Online" if d.get("online") else d.get("location"), "country": d.get("country"),
+                            "open_to": d.get("open_to"), "open": d.get("open_status"), "deadline": _local(d.get("deadline")) or None,
+                            "starts": (d.get("date") or "")[:10] or None})
     watching = [{"opportunity_id": w["id"], "company": json.loads(w["data"]).get("company") or json.loads(w["data"]).get("title"),
                  "last_checked": _local(json.loads(w["data"]).get("watch_checked_at")) or "never"} for w in db.get_watching(user_id)]
     others = [e for e in events if not e.get("opportune")]
@@ -97,10 +101,10 @@ def build_snapshot(user_id: int, now: datetime, events: list[dict]) -> tuple[dic
     snap = {
         "now": now.astimezone(LONDON).strftime("%A %d %B %Y, %H:%M (UK time)"),
         "quiet_hours_now": now.astimezone(LONDON).hour >= QUIET_FROM or now.astimezone(LONDON).hour < QUIET_TO,
-        "student": {k: profile.get(k) for k in ("name", "university", "degree", "graduation_year", "interests") if profile.get(k)},
+        "student": {k: profile.get(k) for k in ("name", "university", "degree", "graduation_year", "interests", "location") if profile.get(k)},
         "applications": applications,
         "blocks_waiting_for_an_answer": waiting,
-        "programmes_waiting_for_approval": pending[:12],
+        "programmes_to_review": pending[:10],
         "programmes_being_watched": watching,
         "other_calendar_events_next_14_days": cal,
         "questions_open_now": [{"question": q["message"]} for q in db.get_open_questions(user_id) if q["kind"] == "ask"],
@@ -139,9 +143,16 @@ How to think:
 
 Tools: repair_clashes (fix blocks that clash with new calendar events, and tidy blocks the student deleted or dragged), move_block
 (move one block, optionally into a time window), check_openings (read the pages of programmes you are waiting on),
-search_for_new (look for new programmes using the student's interests), start_application (plan an application for a programme),
+review_programme (suggest a programme the Researcher found, or say why you would skip it; the student sees it as a pop-up at the top),
 nudge (prompt the student about a block that has ended with no answer; you write the message), ask_student (ask a short
 question with 2-3 answers), finish.
+Reviewing programmes: "programmes_to_review" are programmes the Researcher found that the student has not seen yet. For each one call
+review_programme. Say "recommend" when it is a good fit for this student: the right field, the right year, in the UK or online, open or
+opening soon, with time before the deadline. Say "pass" when you would skip it, and give the real reason: it is only in a city or country the student
+is not in (compare "location" with the student's location), it is for a different year of study, it is outside their interests, it has closed,
+or it is a weak match. Always write the reason to the student in one or two plain sentences, first person, naming the facts, for example
+"This is a quant trading spring week, the field you picked first, and it closes in nine days." or "This is only in Sheffield and you are in London."
+The student decides: nothing is planned until they press the button. Review the best ones first, and at most five per pass.
 Interviews and assessment centres are set by the employer and can never be moved."""
 
 TOOLS = [
@@ -153,10 +164,9 @@ TOOLS = [
                                                        "not_after": {"type": "string", "description": "ISO 8601, latest the new slot may end"}}, "required": ["block_id", "reason"]}},
     {"name": "check_openings", "description": "Read the pages of the programmes being watched and book the application for any that have opened.",
      "input_schema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}},
-    {"name": "search_for_new", "description": "Search the web for new programmes that fit the student's interests. They are saved for review; use start_application to plan the strong, open ones.",
-     "input_schema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}},
-    {"name": "start_application", "description": "Plan an application for a programme waiting for approval: books the Apply block, then practice. Only allowed without asking for strong matches that are open with a deadline.",
-     "input_schema": {"type": "object", "properties": {"opportunity_id": {"type": "integer"}, "reason": {"type": "string"}}, "required": ["opportunity_id", "reason"]}},
+    {"name": "review_programme", "description": "Tell the student about a programme from programmes_to_review: either recommend it, or say you would skip it and why. It appears as a pop-up at the top with buttons. Nothing is booked until the student presses a button.",
+     "input_schema": {"type": "object", "properties": {"opportunity_id": {"type": "integer"}, "verdict": {"type": "string", "enum": ["recommend", "pass"]},
+                                                       "reason": {"type": "string", "description": "One or two plain sentences to the student, first person, with the real facts."}}, "required": ["opportunity_id", "verdict", "reason"]}},
     {"name": "nudge", "description": "Prompt the student about a block that ended and has no answer. You write the message (one or two short sentences, friendly, specific). Not allowed in quiet hours or if nudged in the last two hours.",
      "input_schema": {"type": "object", "properties": {"block_id": {"type": "integer"}, "message": {"type": "string"}, "reason": {"type": "string"}}, "required": ["block_id", "message", "reason"]}},
     {"name": "ask_student", "description": "Ask the student a short question when you are unsure. Give 2 or 3 short answers. You will see their answer next time.",
@@ -175,6 +185,7 @@ class Ctx:
         self.uid, self.call, self.profile, self.now = user_id, call, profile, now
         self.actions = 0
         self.asked = 0
+        self.reviewed = 0
         self.did: dict[str, int] = {}
         self.finished: dict | None = None
 
@@ -193,6 +204,7 @@ class Ctx:
         return next((b for b in db.blocks_with_app(self.uid, statuses) if b["id"] == block_id), None)
 
     async def run(self, name: str, args: dict) -> dict:
+        autopilot.set_activity(self.uid, self._describe(name, args))
         fn = getattr(self, f"t_{name}", None)
         if not fn:
             return {"refused": f"There is no tool called {name}."}
@@ -203,6 +215,21 @@ class Ctx:
         except Exception as e:
             log.exception("Planner tool %s failed for user %s", name, self.uid)
             return {"error": runner.describe(e)}
+
+    def _describe(self, name: str, args: dict) -> str:
+        """What the bar at the top says while a tool runs."""
+        if name == "review_programme":
+            o = next((o for o in db.get_opportunities(self.uid) if o["id"] == args.get("opportunity_id")), None)
+            d = json.loads(o["data"]) if o else {}
+            return f"Planner Agent is reviewing {d.get('title') or d.get('company') or 'a new programme'} for you…"
+        if name == "move_block":
+            b = self._block(args.get("block_id"), ("planned", "due"))
+            return f"Planner Agent is finding a better time for {b['summary'] if b else 'a session'}…"
+        return {"repair_clashes": "Planner Agent is checking your calendar for clashes…",
+                "check_openings": "Planner Agent is checking whether watched programmes have opened…",
+                "nudge": "Planner Agent is writing you a reminder…",
+                "ask_student": "Planner Agent is preparing a question for you…",
+                "finish": "Planner Agent is writing up how your plan looks…"}.get(name, "Planner Agent is working on your plan…")
 
     async def _via_step(self, step, reason: str, empty: str, **kw) -> dict:
         refused = self._budget()
@@ -287,6 +314,34 @@ class Ctx:
         self.count("started")
         return {"started": app["company"]}
 
+    async def t_review_programme(self, opportunity_id: int, verdict: str, reason: str) -> dict:
+        if verdict not in ("recommend", "pass"):
+            return {"refused": "verdict must be recommend or pass."}
+        reason = str(reason or "").strip()
+        if len(reason) < 12:
+            return {"refused": "Give the student a real reason in a sentence."}
+        row = next((o for o in db.get_opportunities(self.uid) if o["id"] == opportunity_id), None)
+        if not row or row["status"] != "pending":
+            return {"refused": "That programme is not waiting for review."}
+        if db.log_exists(self.uid, "opportunity", f'"opportunity_id": {opportunity_id},'):
+            return {"refused": "The student has already been told about that one."}
+        if self.reviewed >= MAX_REVIEWS_PER_PASS:
+            return {"refused": f"You have already reviewed {MAX_REVIEWS_PER_PASS} programmes in this pass. The rest will wait for the next pass."}
+        if sum(1 for q in db.get_open_questions(self.uid) if q["kind"] == "opportunity") >= autopilot.MAX_ANNOUNCE:
+            return {"refused": "The student already has several suggestions waiting. Wait for them to answer."}
+        d = json.loads(row["data"])
+        name = d.get("title") or d.get("company") or "this programme"
+        company = d.get("company") or ""
+        when = autopilot._parse(d.get("deadline"))
+        closes = f" It closes {when.astimezone(LONDON).strftime('%a %d %b')}." if when else ""
+        head = f"I suggest {name}" if verdict == "recommend" else f"I would skip {name}"
+        db.log_action(self.uid, "opportunity", f"{head}{' at ' + company if company and company not in name else ''}.{closes}", None, status="open",
+                      data={"opportunity_id": opportunity_id, "company": company, "title": d.get("title"), "match": d.get("match"), "url": d.get("url"),
+                            "verdict": verdict, "reason": reason[:300]})
+        self.reviewed += 1
+        self.count("suggested" if verdict == "recommend" else "passed_on")
+        return {"shown_to_student": verdict}
+
     async def t_nudge(self, block_id: int, message: str, reason: str) -> dict:
         refused = self._budget()
         if refused:
@@ -331,6 +386,7 @@ async def _think(ctx: Ctx, snap: dict) -> str:
     messages = [{"role": "user", "content": "Here is the student's situation right now. Decide what to do, act, then call finish.\n\n" + json.dumps(snap, indent=1)}]
     last_text = ""
     for _ in range(MAX_STEPS):
+        autopilot.set_activity(ctx.uid, "Planner Agent is thinking about your plan…")
         resp = await client().messages.create(model=MODEL, max_tokens=2048, system=SYSTEM, tools=TOOLS, messages=messages)
         messages.append({"role": "assistant", "content": resp.content})
         last_text = " ".join(b.text for b in resp.content if b.type == "text" and getattr(b, "text", "")).strip() or last_text
@@ -348,12 +404,27 @@ async def _think(ctx: Ctx, snap: dict) -> str:
 
 
 # ---------------------------------------------------------------- one pass
-async def run(user_id: int, force: bool = False) -> dict:
+async def _research(user_id: int, profile: dict, force: bool) -> None:
+    """The Planner Agent asks the Researcher to search. It only really searches when the time is up (every AUTO_DISCOVERY_HOURS),
+    or when `force` is set (two minutes after the student ran a search). Nothing is announced here: the Planner reviews what it finds."""
+    before = db.last_log_id(user_id)
+    try:
+        await autopilot._discover(user_id, profile, {}, force=force, auto_plan=False, announce=False)
+    except Exception:
+        log.exception("Researcher failed for user %s", user_id)
+    if db.last_log_id(user_id) != before:
+        db.annotate_log(user_id, before, f"The Planner Agent asked the Researcher to search (it does this every {autopilot.DISCOVER_EVERY_HOURS:g} hours, and again after you search).")
+
+
+async def run(user_id: int, force: bool = False, research_now: bool = False) -> dict:
     """One planner pass for one student. Returns {"skipped": why} or {"ran": True, "did": {...}}. Raises if it cannot look
     after the calendar, so autopilot can fall back to its fixed steps."""
     if not ENABLED:
         return {"skipped": "planner is off"}
     now = datetime.now(timezone.utc)
+    profile, _ = db.get_profile(user_id)
+    if research_now or profile.get("autopilot", True):
+        await _research(user_id, profile, force=research_now)
     if not db.get_applications(user_id) and not db.get_watching(user_id) and not any(o["status"] == "pending" for o in db.get_opportunities(user_id)):
         return {"skipped": "nothing to plan yet"}
     try:

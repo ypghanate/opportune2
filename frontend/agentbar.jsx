@@ -15,7 +15,7 @@ export default function AgentBar() {
     let live = true;
     const load = () => api.agentPulse().then((r) => live && setP(r)).catch(() => live && setP((x) => (x ? { ...x, awake: false } : null)));
     load();
-    const poll = setInterval(load, 20_000);
+    const poll = setInterval(load, 8_000);
     const tick = setInterval(() => { setNow(new Date()); setI((n) => n + 1); }, 4_000);
     window.addEventListener("focus", load);
     return () => { live = false; clearInterval(poll); clearInterval(tick); window.removeEventListener("focus", load); };
@@ -23,22 +23,22 @@ export default function AgentBar() {
 
   if (!p) return null;
   const lines = [];
+  const live = p.awake && p.activity;
   if (!p.awake) {
-    lines.push("The agent is asleep. The server is waking up, or the background loop is off.");
-  } else if (p.doing === "searching") {
-    lines.push("Searching for new opportunities for you now…");
-  } else if (p.doing === "thinking") {
-    lines.push(p.planner ? "Planner Agent is checking your plan now…" : "Checking your plan now…");
+    lines.push("Asleep. The server is waking up, or the background loop is off.");
+  } else if (live) {
+    lines.push(p.activity.text);
   } else {
     lines.push(p.last_look ? `Awake. Last looked at your plan ${ago(p.last_look, now)}${p.next_look ? `, looking again in ${inn(p.next_look, now)}` : ""}.` : "Awake and about to look at your plan.");
-    if (p.next_search) lines.push(`Next search for new opportunities in ${inn(p.next_search, now)}.`);
-    lines.push(p.watching ? `Watching ${p.watching} programme${p.watching === 1 ? "" : "s"} that ${p.watching === 1 ? "hasn't" : "haven't"} opened yet${p.next_watch ? `, checking again in ${inn(p.next_watch, now)}` : ""}.` : "Ready to reschedule if anything clashes.");
+    if (p.next_search) lines.push(`Next: I ask the Researcher to search for new opportunities in ${inn(p.next_search, now)}.`);
+    else lines.push("Waiting for your first search, then I keep looking for you.");
+    lines.push(p.watching ? `Watching ${p.watching} programme${p.watching === 1 ? "" : "s"} that ${p.watching === 1 ? "hasn't" : "haven't"} opened yet${p.next_watch ? `, checking again in ${inn(p.next_watch, now)}` : ""}.` : "Ready to move your sessions if anything clashes.");
   }
   return (
-    <div className={`agentbar${p.awake ? "" : " asleep"}`} role="status" aria-live="polite">
+    <div className={`agentbar${p.awake ? "" : " asleep"}${live ? " busy" : ""}`} role="status" aria-live="polite">
       <div className="wrap agentbar-in">
         <span className="agentbar-dot" aria-hidden="true" />
-        <span className="agentbar-name">Agent</span>
+        <span className="agentbar-name">Planner Agent</span>
         <span key={i % lines.length} className="agentbar-text">{lines[i % lines.length]}</span>
       </div>
     </div>

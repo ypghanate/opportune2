@@ -51,8 +51,47 @@ export default function CheckIn({ path }) {
     });
   }, [due, canPing]);
 
+  // A new programme the agent found: ping once (not every 30 minutes) because it is good news, not a nag.
+  useEffect(() => {
+    if (canPing !== "granted") return;
+    asks.filter((q) => q.kind === "opportunity").forEach((q) => {
+      if (pinged.current[`o${q.id}`]) return;
+      pinged.current[`o${q.id}`] = Date.now();
+      try { new Notification(q.message.startsWith("I would skip") ? "Planner Agent: I would skip one" : "Planner Agent: new opportunity", { body: `${q.message.replace("New opportunity detected: ", "")}`, tag: `opp-${q.id}` }); } catch { /* not allowed here */ }
+    });
+  }, [asks, canPing]);
+
   const current = due[0];
   const ask = !current ? asks[0] : null;
+  const oppOf = (q) => { try { return JSON.parse(q.data || "{}"); } catch { return {}; } };
+
+  async function planIt() {
+    setBusy("plan");
+    setMsg(null);
+    try {
+      const id = oppOf(ask).opportunity_id;
+      const r = await api.approve([id]);
+      await api.answerQuestion(ask.id, "Planned").catch(() => {});
+      setAsks((list) => list.filter((q) => q.id !== ask.id));
+      if (!(r?.booked || []).includes(id)) setMsg({ ok: false, text: "There was no free slot before its deadline, so I could not book it. It stays in My opportunities." });
+    } catch (e) {
+      setMsg({ ok: false, text: e.message });
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function notThis() {
+    setBusy("skip");
+    setMsg(null);
+    try {
+      await api.skipOpportunity(oppOf(ask).opportunity_id).catch(() => {});
+      await api.answerQuestion(ask.id, "Skipped").catch(() => {});
+      setAsks((list) => list.filter((q) => q.id !== ask.id));
+    } finally {
+      setBusy("");
+    }
+  }
 
   const optionsOf = (q) => { try { return JSON.parse(q.data || "{}").options || []; } catch { return []; } };
   const whyOf = (q) => { try { return JSON.parse(q.data || "{}").reason || ""; } catch { return ""; } };
@@ -142,7 +181,30 @@ export default function CheckIn({ path }) {
             </div>
           </>
         )}
-        {ask && ask.kind !== "ask" && (
+        {ask && ask.kind === "opportunity" && (() => {
+          const o = oppOf(ask);
+          const skip = o.verdict === "pass";
+          return (
+            <>
+              <div className="checkin-text" style={{ "--co": skip ? "var(--muted)" : "var(--accent)" }}>
+                <span className="checkin-from">Planner Agent · {skip ? "I would skip this one" : o.verdict === "recommend" ? "I recommend this one" : "New opportunity detected"}</span>
+                <strong>{ask.message.split(". ")[0].replace(/\.$/, "")}</strong>
+                {o.reason && <span className="log-why">Why: {o.reason}</span>}
+                <span>{ask.message.split(". ").slice(1).join(". ")}</span>
+                {o.match && <span className="app-kind">{o.match} match</span>}
+              </div>
+              <div className="checkin-actions">
+                <button className={`pill pill-sm ${skip ? "" : "pill-solid"}`} disabled={!!busy} onClick={planIt}>{busy === "plan" ? "Planning…" : skip ? "Plan it anyway" : "Yes, plan it"}</button>
+                <button className={`pill pill-sm ${skip ? "pill-solid" : ""}`} disabled={!!busy} onClick={notThis}>{busy === "skip" ? "Saving…" : skip ? "OK, skip it" : "Not for me"}</button>
+                {o.url && <a className="link" href={o.url} target="_blank" rel="noopener noreferrer">View listing ↗</a>}
+                <a className="link" href="#/opportunities">See all</a>
+                {asks.filter((q) => q.kind === "opportunity").length > 1 && <small className="muted">{asks.filter((q) => q.kind === "opportunity").length - 1} more from the Planner Agent</small>}
+                {canPing === "default" && <button className="link" onClick={() => Notification.requestPermission().then(setCanPing)}>Notify me when one appears</button>}
+              </div>
+            </>
+          );
+        })()}
+        {ask && ask.kind !== "ask" && ask.kind !== "opportunity" && (
           <>
             <div className="checkin-text" style={{ "--co": ask.colour }}>
               <strong>{ask.message.split(".")[0]}.</strong>
