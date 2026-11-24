@@ -129,6 +129,7 @@ def get_profile(user=Depends(current_user)):
         **profile,
         "email": user["email"],
         "cv_name": db.get_cv_name(user["id"]) if has_cv else None,
+        "storage": "postgres" if db.PG else "sqlite",  # sqlite on a hosted server means the data is erased on every restart
         "google_connected": db.get_google_token(user["id"]) is not None,
     }
 

@@ -10,6 +10,7 @@ export default function Profile() {
   const [form, setForm] = useState(EMPTY);
   const [cv, setCv] = useState("");
   const [google, setGoogle] = useState(false);
+  const [storage, setStorage] = useState("");
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -25,6 +26,7 @@ export default function Profile() {
         setForm({ ...EMPTY, ...p, ...(draft || {}), interests: draft ? String(draft.interests ?? "") : (p.interests || []).join(", ") });
         setCv(p.cv_name || "");
         setGoogle(!!p.google_connected);
+        setStorage(p.storage || "");
       })
       .catch((e) => setMsg({ ok: false, text: e.message }))
       .finally(() => setLoading(false));
@@ -108,6 +110,12 @@ export default function Profile() {
     <main className="wrap inner">
       <h1>Profile</h1>
       <p className="lede">The agent uses this to decide what to search for and which listings you're eligible for.</p>
+      {storage === "sqlite" && !/^(localhost|127\.)/.test(location.hostname) && (
+        <p className="notice notice-err" role="alert">
+          The server is saving your data on a temporary disk, so your CV, profile and applications are erased whenever it restarts.
+          Set DATABASE_URL on the backend to a Postgres database to keep them.
+        </p>
+      )}
       <form className="form-card wide" onSubmit={save} noValidate>
         <div className="grid-2">
           <label className="field">Full name<input value={form.name} onChange={set("name")} autoComplete="name" placeholder="First and last name" /></label>
