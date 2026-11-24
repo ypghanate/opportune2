@@ -273,6 +273,7 @@ async def search(user_id: int, profile: dict, cv_path: str, query: str, categori
         async with _mcp_tools(user_id) as all_tools:
             tool = next(t for t in all_tools if t.name == "search_opportunities")
             found = extract_items(await asyncio.wait_for(tool.ainvoke(args), SEARCH_TIMEOUT))
+        diag = next((f["diag"] for f in found if f.get("diag")), "")
         errors = [f["error"] for f in found if f.get("error")]
         items = [f for f in found if f.get("title") and not f.get("error") and (f.get("deadline") or f.get("watch"))]
         if errors and not items:
@@ -282,6 +283,8 @@ async def search(user_id: int, profile: dict, cv_path: str, query: str, categori
         else:
             names = ", ".join(i["title"] for i in items[:3])
             message = f"Found {len(items)} opportunities that fit you, including {names}."
+            if len(items) < 5 and diag:
+                message += f" Only a few came through. What happened: {diag}."
         run.status = "done"
         return {"items": items, "message": message}
     except asyncio.TimeoutError:

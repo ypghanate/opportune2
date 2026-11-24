@@ -69,6 +69,7 @@ export default function Find() {
           ) : (
             <>
               <h2 className="results-h">{run.items.length} {run.items.length === 1 ? "opportunity" : "opportunities"} found</h2>
+              {run.message && <p className="muted run-note">{run.message}</p>}
               <ResultsPanel items={run.items} onApproved={approved} />
             </>
           )}

@@ -696,8 +696,12 @@ async def search_opportunities(
 
     began = time_module.monotonic()
 
-    def lap(text):
+    trail: list[str] = []  # a short plain-English account of what was cut, handed back when the list is thin
+
+    def lap(text, keep=True):
         print(f"[search] {text} ({time_module.monotonic() - began:.0f}s)", file=sys.stderr)
+        if keep:
+            trail.append(text.split("  (dropped")[0])
 
     now = datetime.now(timezone.utc)
     left = lambda reserve=0: SEARCH_BUDGET - (time_module.monotonic() - began) - reserve  # seconds remaining
@@ -868,6 +872,10 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             "source": "web",
         })
     lap(f"{len(entries)} distinct open programmes" + (f"  (dropped: {dict(dropped)})" if dropped else ""))
+    if dropped:
+        trail.append("dropped: " + ", ".join(f"{n} {why}" for why, n in dropped.most_common(5)))
+    if dropped["already in your opportunities"]:
+        trail.append(f"{dropped['already in your opportunities']} you already have in My opportunities are not shown again (clear that list to see them)")
 
     # 5. Narrow down to what fits the student and their search
     scores = await _rank(entries, profile_text, seconds=min(22, left(8)))
@@ -879,9 +887,14 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     for e in entries:
         if e["match"] == "none" or e["score"] < MIN_SCORE:
             print(f"[search] dropped, not relevant to your interests or search ({e['match']}, {e['score']}/10): {e['company']} - {e.get('field') or e['title'][:50]}", file=sys.stderr)
+    before_rank = len(entries)
     entries = [e for e in entries if e["match"] != "none" and e["score"] >= MIN_SCORE]
+    if before_rank - len(entries):
+        trail.append(f"{before_rank - len(entries)} not relevant to your interests or search")
     entries.sort(key=lambda e: (e["match"] != "strong", -e["score"], e["deadline"]))  # strong matches first
     kept_entries = _keep_relevant(entries)
+    if len(entries) - len(kept_entries):
+        trail.append(f"{len(entries) - len(kept_entries)} adjacent to your field, set aside")
     reserve = [e for e in entries if e not in kept_entries and e["score"] >= LOOSE_MIN_SCORE]  # only used if too few survive the checks
     entries = kept_entries
 
@@ -916,6 +929,9 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     # confirmed-open programmes first, then the ones we could not confirm
     usable.sort(key=lambda e: (e["match"] != "strong", e.get("open_status") != "open", -e["score"], e["deadline"]))
     kept = usable[:max_results]
+    gone = len(pool) - len([e for e in pool if e in usable or e in upcoming])
+    if gone:
+        trail.append(f"{gone} dropped when their pages were checked (dead link, closed or the wrong year)")
     for e in kept:
         notes = []
         if e.get("open_status") == "open":
@@ -942,7 +958,8 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     if not kept:
         if not results and not from_employers:
             return [{"error": "The web search returned nothing. Check your TAVILY_API_KEY and try again."}]
-        return [{"error": "No open programmes matched your interests and search. Try broader interests on your profile, or a broader search."}]
+        return [{"error": "No open programmes matched your interests and search. Try broader interests on your profile, or a broader search. " + "; ".join(trail)}]
+    kept[0]["diag"] = "; ".join(trail)  # carried on the first result; the runner reads it and does not store it
     return kept
 
 
