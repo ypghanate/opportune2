@@ -38,6 +38,9 @@ tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 llm = AsyncAnthropic()  # reads ANTHROPIC_API_KEY
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")  # search, extraction, scheduling
 FAST_MODEL = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-5-5")  # per-email classification
+SCHEDULER_MODEL = os.environ.get("SCHEDULER_MODEL", FAST_MODEL)  # picks the calendar slots; the code checks every rule, so the fast model is enough
+SCHEDULER_ATTEMPTS = int(os.environ.get("SCHEDULER_ATTEMPTS", "2"))  # model tries before the code finds the slot itself
+SCHEDULER_TIMEOUT = float(os.environ.get("SCHEDULER_TIMEOUT", "25"))  # seconds the model gets for one try
 
 mcp = FastMCP("searching_server")
 
@@ -238,7 +241,40 @@ async def verify_url(url: str) -> bool:
         return False
 
 
+_CACHE: dict = {}
+SEARCH_CACHE_MIN = float(os.environ.get("SEARCH_CACHE_MIN", "30"))  # an identical web search is not repeated inside this many minutes; 0 turns the caches off
+PAGE_CACHE_MIN = float(os.environ.get("PAGE_CACHE_MIN", "60"))  # a programme page is not read again inside this many minutes
+
+
+def _cached(kind: str, key, minutes: float):
+    if minutes <= 0:
+        return None
+    hit = _CACHE.get((kind, key))
+    if hit and time_module.monotonic() - hit[0] < minutes * 60:
+        return hit[1]
+    return None
+
+
+def _remember(kind: str, key, value, minutes: float):
+    if minutes <= 0:
+        return
+    if len(_CACHE) > 4000:  # keep memory small: drop the oldest quarter
+        for k in sorted(_CACHE, key=lambda k: _CACHE[k][0])[:1000]:
+            _CACHE.pop(k, None)
+    _CACHE[(kind, key)] = (time_module.monotonic(), value)
+
+
 async def tavily_search_opportunities(search_query: str, max_results: int = 10) -> list[dict]:
+    hit = _cached("tavily", (search_query, max_results), SEARCH_CACHE_MIN)
+    if hit is not None:
+        return hit
+    found = await _tavily_search(search_query, max_results)
+    if found:
+        _remember("tavily", (search_query, max_results), found, SEARCH_CACHE_MIN)
+    return found
+
+
+async def _tavily_search(search_query: str, max_results: int = 10) -> list[dict]:
     loop = asyncio.get_running_loop()
     response = await loop.run_in_executor(
         None,
@@ -253,9 +289,9 @@ async def tavily_search_opportunities(search_query: str, max_results: int = 10) 
 
 
 class SearchPlan(BaseModel):
-    queries: list[str] = Field(description="12 to 14 different web search queries, each short (3 to 10 words)")
+    queries: list[str] = Field(description="10 to 12 different web search queries, each short (3 to 10 words)")
     student_country: str = Field(default="United Kingdom", description="The country the student's location is in, e.g. 'United Kingdom'")
-    employers: list[str] = Field(default=[], description="30 to 40 real employers (company names only) known to run the wanted kind of programme for this student's stage, spread over their interests")
+    employers: list[str] = Field(default=[], description="25 to 30 real employers (company names only) known to run the wanted kind of programme for this student's stage, spread over their interests")
 
 
 class Candidate(BaseModel):
@@ -415,8 +451,21 @@ Rules:
             print(f"[search] extraction failed for {len(batch)} results: {e}", file=sys.stderr)
             return []
 
-    batches = [results[i:i + EXTRACT_BATCH] for i in range(0, len(results), EXTRACT_BATCH)]
-    return [pair for got in await _within([batch_call(b) for b in batches], seconds) for pair in got]
+    key_of = lambda r: (r["url"], hash(r.get("content", "")), context)
+    cached_pairs, todo = [], []
+    for r in results:
+        hit = _cached("extract", key_of(r), PAGE_CACHE_MIN)
+        if hit is None:
+            todo.append(r)
+        else:
+            cached_pairs += [(r, c) for c in hit]
+    batches = [todo[i:i + EXTRACT_BATCH] for i in range(0, len(todo), EXTRACT_BATCH)]
+    fresh = [pair for got in await _within([batch_call(b) for b in batches], seconds) for pair in got]
+    for r in todo:  # remember what each page gave; a page that gave nothing is read again, since its batch may simply have timed out
+        mine = [c for rr, c in fresh if rr is r]
+        if mine:
+            _remember("extract", key_of(r), mine, PAGE_CACHE_MIN)
+    return cached_pairs + fresh
 
 
 STAGE_WORDS = {"first_year": "first year", "penultimate_year": "penultimate year", "final_year": "final year"}
@@ -571,7 +620,20 @@ async def _check_open(pool: list[dict], now: datetime, seconds: float) -> None:
     """Reads each programme's own page and records whether applications have actually opened."""
     sem = asyncio.Semaphore(10)
 
+    keep = ("alive", "open_status", "open_evidence", "for_year", "deadline", "deadline_assumed", "opens_on")
+
     async def one(e):
+        hit = _cached("open", e["url"], PAGE_CACHE_MIN)
+        if hit:
+            e.update(hit)
+            return
+        try:
+            await one_fresh(e)
+        finally:
+            if e.get("open_status") and e.get("open_status") != "unknown":  # an unknown answer may just be a slow page: try again next time
+                _remember("open", e["url"], {k: e[k] for k in keep if k in e}, PAGE_CACHE_MIN)
+
+    async def one_fresh(e):
         async with sem:
             alive, text = await _fetch_page(e["url"])
             e["alive"] = alive
@@ -642,7 +704,7 @@ CV excerpt: {cv_object['text'][:1200]}"""
 Today is {now:%d %B %Y}.
 {profile_text}
 
-Write 12 to 14 different queries for the current application cycle (programmes running in {now.year + 1}).
+Write 10 to 12 different queries for the current application cycle (programmes running in {now.year + 1}).
 Only target programmes the student can actually attend and apply to from their location; do not search other countries unless they are online or the search request asks for them.
 Tailor every query to THIS student's stage, wording it the way employers do for them (e.g. "first year spring week", "insight programme first year undergraduate", "penultimate year summer internship", "final year" ...). Never write queries for stages they are not in, and never for PhDs, masters or graduate schemes unless that is their stage.
 If the search request is specific (a sector, company, city or type), at least half of the queries must target exactly that. Otherwise spread them over the student's interests and CV.
@@ -654,12 +716,12 @@ Do not repeat yourself; each query should find different programmes.
 
 RELEVANCE IS STRICT. Work out the student's target fields: the search request if it names a field, sector, company or city; otherwise their interests; if neither is given, their degree and CV. Every query and every employer must serve those fields. For example, for a student interested in software engineering write queries such as "software engineering spring insight 2027" and list technology companies and the technology divisions of banks, and do NOT write finance, banking, consulting or trading queries or employers. For a quant or finance student, do the opposite.
 
-Also list 30 to 40 real employers, names only, that run the wanted programme types for a student at this stage (e.g. for a first year: banks, asset managers, trading firms, consultancies, tech companies, law firms, engineering firms, as fits their interests and degree), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
+Also list 25 to 30 real employers, names only, that run the wanted programme types for a student at this stage (e.g. for a first year: banks, asset managers, trading firms, consultancies, tech companies, law firms, engineering firms, as fits their interests and degree), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
     try:
         plan = await asyncio.wait_for(ask([{"role": "system", "content": plan_system},
                                            {"role": "user", "content": query or "Find opportunities for me"}], SearchPlan, model=FAST_MODEL), 10)
-        queries = [q.strip() for q in plan.queries if q.strip()][:14]
-        employers = list(dict.fromkeys(e.strip() for e in plan.employers if e.strip()))[:40]
+        queries = [q.strip() for q in plan.queries if q.strip()][:12]
+        employers = list(dict.fromkeys(e.strip() for e in plan.employers if e.strip()))[:30]
         student_country = plan.student_country or student_country
     except Exception as e:
         print(f"[search] planning failed, using simple queries: {e}", file=sys.stderr)
@@ -1185,11 +1247,15 @@ async def _schedule_blocks(items: list[dict]) -> list[dict]:
 
     # Eval loop: the model proposes, the code checks every rule, and what failed goes back to the model with the reason.
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-    max_attempts = 3
+    max_attempts = SCHEDULER_ATTEMPTS
     for attempt in range(1, max_attempts + 1):
         if not pending:
             break
-        parsed = await ask(messages, ScheduleSuggestions)
+        try:  # a slow or failing model must not hold up the booking: the code finds the slots below
+            parsed = await asyncio.wait_for(ask(messages, ScheduleSuggestions, model=SCHEDULER_MODEL), SCHEDULER_TIMEOUT)
+        except Exception as err:
+            print(f"[schedule] model attempt {attempt} skipped: {err}", file=sys.stderr)
+            break
         messages.append({"role": "assistant", "content": parsed.model_dump_json()})
         by_index = {s.opportunity_index: s for s in parsed.suggestions}
 

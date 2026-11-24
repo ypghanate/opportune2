@@ -5,6 +5,9 @@ const KIND = {
   apply: "Apply", practice: "Practice", oa: "OA", test: "Test", interview_prep: "Interview prep",
   interview: "Interview", ac_prep: "AC prep", assessment_centre: "Assessment centre",
 };
+const QUIET_MS = 100_000; // after you answer a suggestion, the next one waits this long
+const QUIET_KEY = "opportune.suggest.quiet";
+const readQuiet = () => { try { return Number(sessionStorage.getItem(QUIET_KEY)) || 0; } catch { return 0; } };
 const FIXED = ["interview", "assessment_centre"];
 const clock = (iso) => new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
@@ -15,6 +18,8 @@ export default function CheckIn({ path }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
+  const [quietUntil, setQuietUntil] = useState(readQuiet); // no new suggestion pop-up until this time (ms)
+  const [, tick] = useState(0);
   const title = useRef(document.title);
   const pinged = useRef({}); // block id -> when we last pinged about it
   const [canPing, setCanPing] = useState(typeof Notification !== "undefined" ? Notification.permission : "denied");
@@ -51,18 +56,31 @@ export default function CheckIn({ path }) {
     });
   }, [due, canPing]);
 
+  function goQuiet() {
+    const until = Date.now() + QUIET_MS;
+    setQuietUntil(until);
+    try { sessionStorage.setItem(QUIET_KEY, String(until)); } catch { /* private mode: the state still works */ }
+  }
+  useEffect(() => { // wake up when the quiet time ends so the next suggestion can show
+    const left = quietUntil - Date.now();
+    if (left <= 0) return;
+    const t = setTimeout(() => tick((n) => n + 1), left + 200);
+    return () => clearTimeout(t);
+  }, [quietUntil]);
+  const quiet = Date.now() < quietUntil;
+
   // A new programme the agent found: ping once (not every 30 minutes) because it is good news, not a nag.
   useEffect(() => {
-    if (canPing !== "granted") return;
+    if (canPing !== "granted" || quiet) return;
     asks.filter((q) => q.kind === "opportunity").forEach((q) => {
       if (pinged.current[`o${q.id}`]) return;
       pinged.current[`o${q.id}`] = Date.now();
       try { new Notification(q.message.startsWith("I would skip") ? "Planner Agent: I would skip one" : "Planner Agent: new opportunity", { body: `${q.message.replace("New opportunity detected: ", "")}`, tag: `opp-${q.id}` }); } catch { /* not allowed here */ }
     });
-  }, [asks, canPing]);
+  }, [asks, canPing, quiet, quietUntil]);
 
   const current = due[0];
-  const ask = !current ? asks[0] : null;
+  const ask = !current ? asks.find((q) => q.kind !== "opportunity" || !quiet) : null;  // suggestions rest for a bit after you answer one
   const oppOf = (q) => { try { return JSON.parse(q.data || "{}"); } catch { return {}; } };
 
   async function planIt() {
@@ -73,6 +91,7 @@ export default function CheckIn({ path }) {
       const r = await api.approve([id]);
       await api.answerQuestion(ask.id, "Planned").catch(() => {});
       setAsks((list) => list.filter((q) => q.id !== ask.id));
+      goQuiet();
       if (!(r?.booked || []).includes(id)) setMsg({ ok: false, text: "There was no free slot before its deadline, so I could not book it. It stays in My opportunities." });
     } catch (e) {
       setMsg({ ok: false, text: e.message });
@@ -88,6 +107,7 @@ export default function CheckIn({ path }) {
       await api.skipOpportunity(oppOf(ask).opportunity_id).catch(() => {});
       await api.answerQuestion(ask.id, "Skipped").catch(() => {});
       setAsks((list) => list.filter((q) => q.id !== ask.id));
+      goQuiet();
     } finally {
       setBusy("");
     }
@@ -187,19 +207,16 @@ export default function CheckIn({ path }) {
           return (
             <>
               <div className="checkin-text" style={{ "--co": skip ? "var(--muted)" : "var(--accent)" }}>
-                <span className="checkin-from">Planner Agent · {skip ? "I would skip this one" : o.verdict === "recommend" ? "I recommend this one" : "New opportunity detected"}</span>
-                <strong>{ask.message.split(". ")[0].replace(/\.$/, "")}</strong>
-                {o.reason && <span className="log-why">Why: {o.reason}</span>}
-                <span>{ask.message.split(". ").slice(1).join(". ")}</span>
-                {o.match && <span className="app-kind">{o.match} match</span>}
+                <span className="checkin-from">Planner Agent · {skip ? "I would skip this one" : o.verdict === "recommend" ? "I recommend this one" : "New opportunity detected"}{o.match ? ` · ${o.match} match` : ""}</span>
+                <strong className="checkin-head">{ask.message.split(". ")[0].replace(/\.$/, "")}{ask.message.split(". ").length > 1 && <span className="checkin-closes"> · {ask.message.split(". ").slice(1).join(". ").replace(/\.$/, "")}</span>}</strong>
+                {o.reason && <span className="checkin-why">{o.reason}</span>}
               </div>
               <div className="checkin-actions">
                 <button className={`pill pill-sm ${skip ? "" : "pill-solid"}`} disabled={!!busy} onClick={planIt}>{busy === "plan" ? "Planning…" : skip ? "Plan it anyway" : "Yes, plan it"}</button>
                 <button className={`pill pill-sm ${skip ? "pill-solid" : ""}`} disabled={!!busy} onClick={notThis}>{busy === "skip" ? "Saving…" : skip ? "OK, skip it" : "Not for me"}</button>
                 {o.url && <a className="link" href={o.url} target="_blank" rel="noopener noreferrer">View listing ↗</a>}
-                <a className="link" href="#/opportunities">See all</a>
-                {asks.filter((q) => q.kind === "opportunity").length > 1 && <small className="muted">{asks.filter((q) => q.kind === "opportunity").length - 1} more from the Planner Agent</small>}
-                {canPing === "default" && <button className="link" onClick={() => Notification.requestPermission().then(setCanPing)}>Notify me when one appears</button>}
+                <a className="link" href="#/opportunities">See all{asks.filter((q) => q.kind === "opportunity").length > 1 ? ` (${asks.filter((q) => q.kind === "opportunity").length})` : ""}</a>
+                {canPing === "default" && <button className="link" onClick={() => Notification.requestPermission().then(setCanPing)}>Notify me</button>}
               </div>
             </>
           );

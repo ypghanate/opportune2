@@ -182,32 +182,15 @@ export default function Applications() {
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState([]);
   const [showWithdrawn, setShowWithdrawn] = useState(false);
-  const [log, setLog] = useState([]);
   const [status, setStatus] = useState([]);
   const [thinking, setThinking] = useState(null);
-  const [running, setRunning] = useState(false);
-  const [ran, setRan] = useState("");
 
   const load = useCallback(() => {
     api.applications().then(setApps).catch((e) => setError(e.message));
-    api.agentLog().then(setLog).catch(() => {});
     api.agentStatus().then(setStatus).catch(() => {});
     api.agentThinking().then(setThinking).catch(() => {});
   }, []);
 
-  async function runNow() {
-    setRunning(true);
-    setRan("");
-    try {
-      const { done } = await api.runAgent();
-      const bits = Object.entries(done || {}).map(([k, v]) => `${k} ${typeof v === "number" ? v : ""}`.trim());
-      setRan(bits.length ? `Done: ${bits.join(", ")}.` : "Everything is in order. Nothing to change.");
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setRunning(false);
-    }
-  }
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     window.addEventListener("opps-changed", load);
@@ -231,6 +214,31 @@ export default function Applications() {
     <main className="wrap inner">
       <h1>Applications</h1>
       <p className="lede">Every company you are applying to, with its stage. Each has its own colour in your calendar and its own set of blocks.</p>
+      {error && <p className="notice notice-err" role="alert">{error}</p>}
+      {warnings.map((w) => <p key={w} className="notice notice-err" role="alert">{w}</p>)}
+      {!apps && !error && <p className="muted">Loading…</p>}
+      {apps && apps.length === 0 && (
+        <p className="empty">No applications yet. <a className="link" href="#/opportunities">Approve an opportunity</a> and it will appear here with its plan.</p>
+      )}
+      {apps && apps.length > 0 && (
+        <>
+          <div className="kanban" role="list">
+            {COLUMNS.map(([stage, label]) => (
+              <section key={stage} className="kan-col" role="listitem" aria-label={`${label}, ${by[stage].length}`}>
+                <h2 className="kan-title">{label} <span className="kan-count">{by[stage].length}</span></h2>
+                <ul className="kan-list">
+                  {by[stage].map((a) => <Card key={a.id} app={a} onChange={changed} />)}
+                </ul>
+              </section>
+            ))}
+          </div>
+          {withdrawn.length > 0 && (
+            <p><button className="link-btn" onClick={() => setShowWithdrawn(!showWithdrawn)}>{showWithdrawn ? "Hide" : "Show"} {withdrawn.length} withdrawn</button></p>
+          )}
+          {showWithdrawn && <ul className="kan-list kan-withdrawn">{withdrawn.map((a) => <Card key={a.id} app={a} onChange={changed} />)}</ul>}
+        </>
+      )}
+      <div className="agent-panels">
       {thinking && (thinking.assessment || thinking.mode === "rules") && (
         <section className="tile thinking" aria-label="How the agent sees your plan">
           <div className="agent-head">
@@ -257,53 +265,7 @@ export default function Applications() {
           ))}
         </ul>
       </section>
-      <section className="tile agent-log" aria-label="What the agent did">
-        <div className="agent-head">
-          <h2>What the agent did, and why</h2>
-          <button className="pill pill-sm" disabled={running} onClick={runNow}>{running ? "Checking your calendar…" : "Run the agent now"}</button>
-        </div>
-        {ran && <p className="muted" role="status">{ran}</p>}
-        {log.length === 0 ? (
-          <p className="muted">Nothing yet. It looks after your calendar in the background: moving blocks that clash with new events, rebooking ones you miss, nudging you about quiet applications and booking programmes when they open.</p>
-        ) : (
-          <ul className="log-list">
-            {log.slice(0, 8).map((l) => (
-              <li key={l.id} style={{ "--co": l.colour || "var(--muted)" }}>
-                <span className="log-dot" aria-hidden="true" />
-                <span>
-                  {l.message}
-                  {whyOf(l) && <span className="log-why">Why: {whyOf(l)}</span>}
-                </span>
-                <small className="muted">{new Date(l.created_at.replace(" ", "T") + "Z").toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</small>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-      {error && <p className="notice notice-err" role="alert">{error}</p>}
-      {warnings.map((w) => <p key={w} className="notice notice-err" role="alert">{w}</p>)}
-      {!apps && !error && <p className="muted">Loading…</p>}
-      {apps && apps.length === 0 && (
-        <p className="empty">No applications yet. <a className="link" href="#/opportunities">Approve an opportunity</a> and it will appear here with its plan.</p>
-      )}
-      {apps && apps.length > 0 && (
-        <>
-          <div className="kanban" role="list">
-            {COLUMNS.map(([stage, label]) => (
-              <section key={stage} className="kan-col" role="listitem" aria-label={`${label}, ${by[stage].length}`}>
-                <h2 className="kan-title">{label} <span className="kan-count">{by[stage].length}</span></h2>
-                <ul className="kan-list">
-                  {by[stage].map((a) => <Card key={a.id} app={a} onChange={changed} />)}
-                </ul>
-              </section>
-            ))}
-          </div>
-          {withdrawn.length > 0 && (
-            <p><button className="link-btn" onClick={() => setShowWithdrawn(!showWithdrawn)}>{showWithdrawn ? "Hide" : "Show"} {withdrawn.length} withdrawn</button></p>
-          )}
-          {showWithdrawn && <ul className="kan-list kan-withdrawn">{withdrawn.map((a) => <Card key={a.id} app={a} onChange={changed} />)}</ul>}
-        </>
-      )}
+      </div>
     </main>
   );
 }
