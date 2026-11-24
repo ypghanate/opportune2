@@ -362,9 +362,19 @@ def status(user_id: int) -> list[dict]:
     out = []
     if planner.ENABLED:
         st = db.get_planner_state(user_id)
-        out.append({"key": "planner", "on": st.get("mode") != "rules", "title": "Planner Agent",
-                    "text": ("I read your whole plan, decide what needs doing and act on it, all by myself. " + (f"Last looked at {clock(st['ran_at'])}." if st.get("ran_at") else "I will look as soon as something changes."))
-                    if st.get("mode") != "rules" else "The planner hit a problem, so I am using simple rules for now."})
+        live = activity.get(user_id)
+        if st.get("mode") == "rules":
+            text = "The planner hit a problem, so I am using simple rules for now."
+        elif live and (_parse(live["since"]) or now) > now - timedelta(minutes=10):
+            text = live["text"]  # what it is doing this second
+        elif st.get("assessment"):
+            said = st["assessment"].strip()
+            said = said if len(said) <= 220 else said[:217].rsplit(" ", 1)[0] + "…"
+            worries = f" {len(st['concerns'])} thing{'s' * (len(st['concerns']) != 1)} I am keeping an eye on." if st.get("concerns") else ""
+            text = f"{said}{worries} (Looked at {clock(st['ran_at'])}.)"  # its own words from the last time it looked
+        else:
+            text = "I have not looked at your plan yet. I will as soon as something changes."
+        out.append({"key": "planner", "on": st.get("mode") != "rules", "title": "Planner Agent", "text": text})
 
     ahead = [b for b in db.blocks_with_app(user_id, ("planned",)) if b["event_id"] and b["start"] > now.isoformat()]
     out.append({"key": "clash", "on": bool(ahead), "title": "Clash repair",
