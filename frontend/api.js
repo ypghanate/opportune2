@@ -2,11 +2,21 @@
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const KEY = "opportune_token";
 
+// The sign-in lasts for one visit: it lives in sessionStorage, so closing the tab or window signs you out. Your browser or
+// password manager can still fill in the saved email and password. Any older long-lived sign-in is cleared.
+try { localStorage.removeItem(KEY); } catch { /* storage unavailable */ }
 export const getToken = () => {
-  try { return localStorage.getItem(KEY); } catch { return null; }
+  try { return sessionStorage.getItem(KEY); } catch { return null; }
 };
 export const setToken = (t) => {
-  try { t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY); } catch { /* storage unavailable */ }
+  try { t ? sessionStorage.setItem(KEY, t) : sessionStorage.removeItem(KEY); } catch { /* storage unavailable */ }
+};
+
+// The first time you run the agent in a visit starts the clock for the suggestion pop-ups (checkin.jsx).
+export const RAN_KEY = "opportune.visit.ranAt";
+export const markAgentRun = () => {
+  try { if (!sessionStorage.getItem(RAN_KEY)) sessionStorage.setItem(RAN_KEY, String(Date.now())); } catch { /* private mode */ }
+  window.dispatchEvent(new Event("opportune:agent-run"));
 };
 
 let onAuthError = () => {};
@@ -65,7 +75,7 @@ export const api = {
     form.append("file", file);
     return request("/api/profile/cv", { method: "POST", form });
   },
-  search: (query, categories) => request("/api/opportunities/search", { method: "POST", json: { query, categories } }).then(changed),
+  search: (query, categories) => (markAgentRun(), request)("/api/opportunities/search", { method: "POST", json: { query, categories } }).then(changed),
   opportunities: () => request("/api/opportunities"),
   deleteAllOpportunities: () => request("/api/opportunities", { method: "DELETE" }).then(changed),
   calendar: (start, end) => request(`/api/calendar?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),
@@ -80,7 +90,7 @@ export const api = {
   answerQuestion: (id, answer = "") => request(`/api/agent/log/${id}/answer`, { method: "POST", json: { answer } }).then(changed),
   skipOpportunity: (id) => request(`/api/opportunities/${id}/skip`, { method: "POST" }).then(changed),
   agentThinking: () => request("/api/agent/thinking"),
-  runAgent: () => request("/api/agent/run", { method: "POST" }).then(changed),
+  runAgent: () => (markAgentRun(), request)("/api/agent/run", { method: "POST" }).then(changed),
   applications: () => request("/api/applications"),
   changeStage: (id, form) => request(`/api/applications/${id}/stage`, { method: "POST", form }).then(changed),
   approve: (ids) => request("/api/opportunities/approve", { method: "POST", json: ids }).then(changed),

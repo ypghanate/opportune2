@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "./api.js";
+import { api, RAN_KEY } from "./api.js";
 
 const KIND = {
   apply: "Apply", practice: "Practice", oa: "OA", test: "Test", interview_prep: "Interview prep",
   interview: "Interview", ac_prep: "AC prep", assessment_centre: "Assessment centre",
 };
-const QUIET_MS = 100_000; // after you answer a suggestion, the next one waits this long
+const FIRST_MS = 95_000;   // the first suggestion shows this long after you first run the agent in a visit
+const EVERY_MS = 180_000;  // after that, at most one new-opportunity pop-up every 3 minutes
 const QUIET_KEY = "opportune.suggest.quiet";
+const readRan = () => { try { return Number(sessionStorage.getItem(RAN_KEY)) || 0; } catch { return 0; } };
 const readQuiet = () => { try { return Number(sessionStorage.getItem(QUIET_KEY)) || 0; } catch { return 0; } };
 const FIXED = ["interview", "assessment_centre"];
 const clock = (iso) => new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -19,6 +21,8 @@ export default function CheckIn({ path }) {
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
   const [quietUntil, setQuietUntil] = useState(readQuiet); // no new suggestion pop-up until this time (ms)
+  const [ranAt, setRanAt] = useState(readRan); // when you first ran the agent this visit (0 = not yet, so no suggestion pop-ups)
+  const shownAt = useRef({ id: null, at: 0 });
   const [, tick] = useState(0);
   const title = useRef(document.title);
   const pinged = useRef({}); // block id -> when we last pinged about it
@@ -56,18 +60,26 @@ export default function CheckIn({ path }) {
     });
   }, [due, canPing]);
 
+  useEffect(() => {
+    const onRun = () => setRanAt(readRan());
+    window.addEventListener("opportune:agent-run", onRun);
+    return () => window.removeEventListener("opportune:agent-run", onRun);
+  }, []);
+  const gate = ranAt ? ranAt + FIRST_MS : Infinity;       // nothing before you have run the agent, and 95 s after
+  const holdUntil = Math.max(quietUntil, gate);
+
   function goQuiet() {
-    const until = Date.now() + QUIET_MS;
+    const until = Math.max(shownAt.current.at, Date.now() - EVERY_MS + 1000) + EVERY_MS;  // 3 minutes after the last one appeared
     setQuietUntil(until);
     try { sessionStorage.setItem(QUIET_KEY, String(until)); } catch { /* private mode: the state still works */ }
   }
   useEffect(() => { // wake up when the quiet time ends so the next suggestion can show
-    const left = quietUntil - Date.now();
-    if (left <= 0) return;
+    const left = holdUntil - Date.now();
+    if (left <= 0 || !Number.isFinite(left)) return;
     const t = setTimeout(() => tick((n) => n + 1), left + 200);
     return () => clearTimeout(t);
-  }, [quietUntil]);
-  const quiet = Date.now() < quietUntil;
+  }, [holdUntil]);
+  const quiet = Date.now() < holdUntil;
 
   // A new programme the agent found: ping once (not every 30 minutes) because it is good news, not a nag.
   useEffect(() => {
@@ -77,10 +89,13 @@ export default function CheckIn({ path }) {
       pinged.current[`o${q.id}`] = Date.now();
       try { new Notification(q.message.startsWith("I would skip") ? "Planner Agent: I would skip one" : "Planner Agent: new opportunity", { body: `${q.message.replace("New opportunity detected: ", "")}`, tag: `opp-${q.id}` }); } catch { /* not allowed here */ }
     });
-  }, [asks, canPing, quiet, quietUntil]);
+  }, [asks, canPing, quiet, holdUntil]);
 
   const current = due[0];
   const ask = !current ? asks.find((q) => q.kind !== "opportunity" || !quiet) : null;  // suggestions rest for a bit after you answer one
+  useEffect(() => { // remember when this suggestion first appeared: the next one comes 3 minutes after it
+    if (ask?.kind === "opportunity" && shownAt.current.id !== ask.id) shownAt.current = { id: ask.id, at: Date.now() };
+  }, [ask]);
   const oppOf = (q) => { try { return JSON.parse(q.data || "{}"); } catch { return {}; } };
 
   async function planIt() {
