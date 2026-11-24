@@ -487,6 +487,19 @@ def pulse(user_id: int) -> dict:
             "next_search": nxt(last_s, DISCOVER_EVERY_HOURS), "next_watch": nxt(last_w, WATCH_EVERY_HOURS), "now": now.isoformat()}
 
 
+SESSION_GAP_HOURS = float(os.environ.get("SESSION_GAP_HOURS", "6"))  # a search after this long without one starts a "new session"
+_last_search: dict[int, datetime] = {}
+
+
+def note_search(user_id: int) -> bool:
+    """Called each time the student runs a search. True only for the first search of a new session, which is the only one
+    that gets the 2-minute follow-up. Later searches in the same session do not schedule another."""
+    now = datetime.now(timezone.utc)
+    last = _last_search.get(user_id)
+    _last_search[user_id] = now
+    return not last or now - last > timedelta(hours=SESSION_GAP_HOURS)
+
+
 async def follow_up(user_id: int):
     """Two minutes after a student runs a search, look again: new programmes and the ones being watched."""
     if FOLLOW_UP_MIN <= 0:

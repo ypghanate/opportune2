@@ -267,7 +267,7 @@ async def search(body: SearchIn, user=Depends(current_user)):
     repeats = len(result["items"]) - len(fresh)
     if repeats:
         message += f"\n\n{repeats} of what the agent found {'was' if repeats == 1 else 'were'} already in My opportunities, so not shown again."
-    if autopilot.FOLLOW_UP_MIN > 0:
+    if autopilot.note_search(user["id"]) and autopilot.FOLLOW_UP_MIN > 0:  # only the first search of a session
         _bg.add(t := asyncio.create_task(autopilot.follow_up(user["id"])))  # looks again in a couple of minutes
         t.add_done_callback(_bg.discard)
     return {"items": [view(r) for r in rows], "message": message}
