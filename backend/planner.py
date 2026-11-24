@@ -28,7 +28,7 @@ import autopilot
 log = logging.getLogger("uvicorn.error")
 LONDON = ZoneInfo("Europe/London")
 ENABLED = os.environ.get("PLANNER", "1") != "0"
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")
+MODEL = os.environ.get("PLANNER_MODEL") or os.environ.get("FAST_MODEL", "claude-haiku-5-5")  # the planner makes several model calls per pass, so it uses the fast model; set PLANNER_MODEL to use another
 MAX_STEPS = 8                    # model turns per pass
 MAX_ACTIONS = 6                  # things it may change per pass
 MAX_PASSES_PER_DAY = int(os.environ.get("PLANNER_MAX_PER_DAY", "12"))

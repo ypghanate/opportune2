@@ -337,10 +337,12 @@ class Scores(BaseModel):
     scores: list[Score]
 
 
-SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "65"))  # seconds for the whole search; each stage adapts to what is left
+SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "75"))  # seconds for the whole search; each stage adapts to what is left
 SEARCH_CONCURRENCY = 8  # Tavily searches at once
 EXTRACT_BATCH = 10  # search results read per model call
 MAX_SHOWN = 8  # most opportunities returned, best first
+LOOSE_MIN_SCORE = 4  # the weakest adjacent match that may fill a thin list
+MIN_WANTED = 5  # below this many results, looser matches are added so the list is not nearly empty
 MAX_WATCH = 3  # programmes that are not open yet and are watched, on top of the open ones
 MAX_RESOLVE = 20  # companies found on list pages that we look up on their own
 
@@ -616,16 +618,18 @@ async def _fetch_page(url: str) -> tuple[bool, str]:
             return False, ""
         async with httpx.AsyncClient(timeout=7.0, follow_redirects=True) as client:
             response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        if response.status_code >= 400 and response.status_code not in (401, 403, 429):
+        if response.status_code in (404, 410):
             return False, ""
+        if response.status_code >= 400:  # blocked, rate limited or a server hiccup: the page may be fine, we just cannot read it
+            return True, ""
         final = httpx.URL(str(response.url))
         if final.host == parsed.host and len(final.path) <= 1:
             return False, ""
         if response.status_code >= 400 or "html" not in response.headers.get("content-type", "html"):
             return True, ""
         return True, _page_text(response.text)
-    except Exception:
-        return False, ""
+    except Exception:  # a slow or odd career site is not proof the link is dead; only a clear 404 or a redirect to the home page is
+        return True, ""
 
 
 async def _check_open(pool: list[dict], now: datetime, seconds: float) -> None:
@@ -877,7 +881,9 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             print(f"[search] dropped, not relevant to your interests or search ({e['match']}, {e['score']}/10): {e['company']} - {e.get('field') or e['title'][:50]}", file=sys.stderr)
     entries = [e for e in entries if e["match"] != "none" and e["score"] >= MIN_SCORE]
     entries.sort(key=lambda e: (e["match"] != "strong", -e["score"], e["deadline"]))  # strong matches first
-    entries = _keep_relevant(entries)
+    kept_entries = _keep_relevant(entries)
+    reserve = [e for e in entries if e not in kept_entries and e["score"] >= LOOSE_MIN_SCORE]  # only used if too few survive the checks
+    entries = kept_entries
 
     # 6. Read each programme's own page: is the link alive, and have applications actually opened?
     pool = entries[: max_results * 4]  # spares, since closed, not-yet-open and dead ones are dropped here
@@ -895,6 +901,18 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             print(f"[search] dropped, applications closed: {e['company']} ({e.get('open_evidence', '')})", file=sys.stderr)
         else:
             usable.append(e)
+    if len(usable) < MIN_WANTED and reserve and left(4) > 4:  # too few: check the looser matches too and add the ones that are open
+        extra = [e for e in reserve if e not in pool][: MIN_WANTED * 3]
+        await _check_open(extra, now, min(14, max(left(3), 2)))
+        for e in extra:
+            if e.get("alive") is False or e.get("open_status") == "closed" or (e.get("for_year") and e["for_year"] < first_year):
+                continue
+            if e.get("open_status") == "not_yet_open":
+                upcoming.append(e)
+            else:
+                e["loose"] = True
+                usable.append(e)
+        lap(f"only a few close matches, so {len([e for e in usable if e.get('loose')])} looser ones were added")
     # confirmed-open programmes first, then the ones we could not confirm
     usable.sort(key=lambda e: (e["match"] != "strong", e.get("open_status") != "open", -e["score"], e["deadline"]))
     kept = usable[:max_results]
@@ -908,6 +926,8 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             groups = [GROUP_WORDS[g] for g in e["restricted_to"] if g in GROUP_WORDS]
             if groups:
                 notes.append("Check you qualify: for " + ", ".join(groups) + ".")
+        if e.get("loose"):
+            notes.append("A looser match for your interests.")
         e["note"] = " ".join(notes)
         e.pop("_snippet", None)
         print(f"[search] returned ({e['match']}, {e['score']}/10, {e.get('open_status', 'unknown')}): {e['company']} - {e['title'][:50]} [{e.get('field', '')}]", file=sys.stderr)
