@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -19,7 +20,8 @@ CREATE TABLE IF NOT EXISTS profiles (
     user_id INTEGER PRIMARY KEY,
     data TEXT NOT NULL DEFAULT '{}',
     cv_path TEXT,
-    cv_name TEXT
+    cv_name TEXT,
+    cv_blob BLOB
 );
 CREATE TABLE IF NOT EXISTS google_tokens (
     user_id INTEGER PRIMARY KEY,
@@ -112,7 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_blocks_user_start ON blocks(user_id, start_at);
 
 
 # Columns added after the first release: a database created earlier gets them on the next start.
-NEW_COLUMNS = {"blocks": [("resource_url", "TEXT"), ("resource_label", "TEXT"), ("note", "TEXT")], "applications": [("field", "TEXT")]}
+NEW_COLUMNS = {"blocks": [("resource_url", "TEXT"), ("resource_label", "TEXT"), ("note", "TEXT")], "applications": [("field", "TEXT")], "profiles": [("cv_blob", "BLOB")]}
 
 
 def _add_missing_columns(c):
@@ -170,10 +172,18 @@ def get_user(user_id: int):
 # ---- profile ----
 def get_profile(user_id: int) -> tuple[dict, str | None]:
     with conn() as c:
-        row = c.execute("SELECT data, cv_path FROM profiles WHERE user_id = ?", (user_id,)).fetchone()
+        row = c.execute("SELECT data, cv_path, cv_blob FROM profiles WHERE user_id = ?", (user_id,)).fetchone()
     if not row:
         return {}, None
-    return json.loads(row["data"]), row["cv_path"]
+    path = row["cv_path"]
+    if path and row["cv_blob"] and not os.path.exists(path):  # the server's disk was wiped (a restart or redeploy): put the CV back from the database
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                f.write(row["cv_blob"])
+        except OSError:
+            pass
+    return json.loads(row["data"]), path
 
 
 def get_cv_name(user_id: int) -> str | None:
@@ -191,12 +201,13 @@ def save_profile(user_id: int, data: dict):
         )
 
 
-def set_cv(user_id: int, path: str, name: str):
+def set_cv(user_id: int, path: str, name: str, data: bytes | None = None):
+    """Remembers the CV. The file itself is also kept in the database, so it survives the server's disk being wiped."""
     with conn() as c:
         c.execute(
-            "INSERT INTO profiles(user_id, data, cv_path, cv_name) VALUES (?, '{}', ?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET cv_path = excluded.cv_path, cv_name = excluded.cv_name",
-            (user_id, path, name),
+            "INSERT INTO profiles(user_id, data, cv_path, cv_name, cv_blob) VALUES (?, '{}', ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET cv_path = excluded.cv_path, cv_name = excluded.cv_name, cv_blob = excluded.cv_blob",
+            (user_id, path, name, data),
         )
 
 
