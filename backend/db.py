@@ -9,6 +9,11 @@ import config
 
 DB_PATH = config.DATA_DIR / "app.db"
 
+# DATABASE_URL (a Postgres address, e.g. from Neon or Supabase) keeps the data outside the server, so a restart or redeploy cannot wipe it.
+# Without it the app uses the local SQLite file, as before (handy on your own computer and for tests).
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,10 +130,127 @@ def _add_missing_columns(c):
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
 
+_NOW_PG = "to_char(now() at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS')"  # the same text format SQLite's datetime('now') gives
+
+
+def _schema_pg() -> list[str]:
+    text = "\n".join(l for l in SCHEMA.splitlines() if not l.strip().startswith("--"))
+    text = text.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY").replace("BLOB", "BYTEA")
+    text = text.replace("CURRENT_TIMESTAMP", _NOW_PG)
+    return [p.strip() for p in text.split(";") if p.strip()]
+
+
+_ID_TABLES = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \(\s*id INTEGER PRIMARY KEY AUTOINCREMENT", SCHEMA))
+
+
+def _to_pg(sql: str, has_params: bool) -> tuple[str, bool]:
+    """Turns the SQLite-flavoured statements used in this file into Postgres ones. Returns (sql, wants_the_new_id_back)."""
+    if has_params:
+        sql = sql.replace("%", "%%")  # literal percent signs, e.g. in LIKE patterns
+    sql = re.sub(r"datetime\('now'(?:\s*,\s*('[^']*'|\?))?\)",
+                 lambda m: f"to_char((now() at time zone 'utc') + CAST({m.group(1)} AS interval), 'YYYY-MM-DD HH24:MI:SS')" if m.group(1) else _NOW_PG, sql)
+    sql = sql.replace("CURRENT_TIMESTAMP", _NOW_PG)
+    ignore = re.match(r"\s*INSERT OR IGNORE", sql, re.I)
+    if ignore:
+        sql = re.sub(r"INSERT OR IGNORE", "INSERT", sql, count=1, flags=re.I) + " ON CONFLICT DO NOTHING"
+    sql = sql.replace("?", "%s")
+    wants_id = False
+    m = re.match(r"\s*INSERT INTO (\w+)", sql, re.I)
+    if m and m.group(1) in _ID_TABLES and "ON CONFLICT" not in sql.upper() and "RETURNING" not in sql.upper():
+        sql, wants_id = sql + " RETURNING id", True
+    return sql, wants_id
+
+
+class Row(dict):
+    """A result row that can be read by column name or by position, like sqlite3.Row."""
+    def __getitem__(self, k):
+        return list(self.values())[k] if isinstance(k, int) else super().__getitem__(k)
+
+
+def _row_factory(cursor):
+    names = [d.name for d in cursor.description or []]
+    return lambda values: Row(zip(names, [bytes(v) if isinstance(v, memoryview) else v for v in values]))
+
+
+class _Result:
+    def __init__(self, cur, lastrowid=None):
+        self._cur, self.lastrowid = cur, lastrowid
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    def fetchone(self):
+        return self._cur.fetchone() if self._cur.description else None
+
+    def fetchall(self):
+        return self._cur.fetchall() if self._cur.description else []
+
+    def __iter__(self):
+        return iter(self.fetchall())
+
+
+class _PgConn:
+    """Gives a Postgres connection the small part of the sqlite3 connection interface that this file uses."""
+    def __init__(self, raw):
+        self.raw = raw
+
+    @staticmethod
+    def _clean(params):
+        return tuple(int(p) if isinstance(p, bool) else p for p in (params or ()))
+
+    def execute(self, sql, params=()):
+        sql, wants_id = _to_pg(sql, bool(params))
+        cur = self.raw.execute(sql, self._clean(params) or None)
+        if wants_id:
+            row = cur.fetchone()
+            return _Result(cur, row["id"] if row else None)
+        return _Result(cur)
+
+    def executemany(self, sql, rows):
+        for params in rows:
+            self.execute(sql, params)
+
+
+_pool = None
+
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        import psycopg
+        from psycopg_pool import ConnectionPool
+        _pool = ConnectionPool(
+            DATABASE_URL, min_size=1, max_size=int(os.environ.get("DB_POOL_MAX", "8")), open=True, timeout=30,
+            check=ConnectionPool.check_connection,  # hosted databases drop idle connections; a dead one is replaced, not handed out
+            kwargs={"cursor_factory": psycopg.ClientCursor, "row_factory": _row_factory, "prepare_threshold": None},
+        )
+    return _pool
+
+
+def close_pool():
+    global _pool
+    if _pool is not None:
+        _pool.close()
+        _pool = None
+
+
+import atexit
+atexit.register(close_pool)
+
+
 def init():
-    """Creates the data folder, the database file and the tables if they are missing."""
+    """Creates the data folder, the database and the tables if they are missing."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     config.CV_ROOT.mkdir(parents=True, exist_ok=True)
+    if PG:
+        with _get_pool().connection() as raw:
+            for statement in _schema_pg():
+                raw.execute(statement)
+            for table, columns in NEW_COLUMNS.items():
+                for name, kind in columns:
+                    raw.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {'BYTEA' if kind == 'BLOB' else kind}")
+        return
     c = sqlite3.connect(DB_PATH)
     try:
         c.execute("PRAGMA journal_mode=WAL")  # readers do not block the writer, which matters with many users
@@ -141,6 +263,10 @@ def init():
 
 @contextmanager
 def conn():
+    if PG:
+        with _get_pool().connection() as raw:  # commits when the block ends, rolls back if it raised
+            yield _PgConn(raw)
+        return
     if not DB_PATH.exists():  # e.g. the data folder was deleted while the server was running
         init()
     c = sqlite3.connect(DB_PATH, timeout=15)
