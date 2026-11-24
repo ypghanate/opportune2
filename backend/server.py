@@ -39,8 +39,8 @@ llm = AsyncAnthropic()  # reads ANTHROPIC_API_KEY
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")  # search, extraction, scheduling
 FAST_MODEL = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-5-5")  # per-email classification
 SCHEDULER_MODEL = os.environ.get("SCHEDULER_MODEL", FAST_MODEL)  # picks the calendar slots; the code checks every rule, so the fast model is enough
-SCHEDULER_ATTEMPTS = int(os.environ.get("SCHEDULER_ATTEMPTS", "2"))  # model tries before the code finds the slot itself
-SCHEDULER_TIMEOUT = float(os.environ.get("SCHEDULER_TIMEOUT", "25"))  # seconds the model gets for one try
+SCHEDULER_ATTEMPTS = int(os.environ.get("SCHEDULER_ATTEMPTS", "1"))  # model tries before the code finds the slot itself
+SCHEDULER_TIMEOUT = float(os.environ.get("SCHEDULER_TIMEOUT", "12"))  # seconds the model gets for one try
 
 mcp = FastMCP("searching_server")
 
@@ -337,7 +337,7 @@ class Scores(BaseModel):
     scores: list[Score]
 
 
-SEARCH_BUDGET = 82  # seconds for the whole search; the app promises it finishes within 90
+SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "65"))  # seconds for the whole search; each stage adapts to what is left
 SEARCH_CONCURRENCY = 8  # Tavily searches at once
 EXTRACT_BATCH = 10  # search results read per model call
 MAX_SHOWN = 8  # most opportunities returned, best first
@@ -354,6 +354,8 @@ async def _within(coros, seconds: float) -> list:
     for t in pending:
         t.cancel()
     return [t.result() for t in tasks if t in done and not t.cancelled() and t.exception() is None]
+MIN_STRONG = 5  # with this many strong matches, partial ones are left out
+PARTIAL_MIN_SCORE = 6  # a partial match needs at least this score to fill a gap
 MIN_SCORE = 2  # only clearly wrong ones are dropped; the best MAX_SHOWN are kept whatever their score
 NO_DEADLINE_DAYS_WEB = 14  # rolling or unknown deadline: apply within two weeks
 
@@ -491,23 +493,33 @@ async def _resolve_many(companies: list[Candidate], context: str, year: int, sta
     return out
 
 
+def _keep_relevant(entries: list[dict]) -> list[dict]:
+    """Strong matches (in the student's own fields) first. With enough of them, adjacent ones are left out; with too few,
+    only decent adjacent ones fill the gap, so a quant student is not shown generic finance programmes."""
+    strong = [e for e in entries if e["match"] == "strong"]
+    if len(strong) >= MIN_STRONG:
+        return strong
+    return strong + [e for e in entries if e["match"] != "strong" and e["score"] >= PARTIAL_MIN_SCORE]
+
+
 async def _rank(entries: list[dict], profile_text: str, seconds: float = 12) -> dict[int, Score]:
     compact = [{"index": n, "company": e["company"], "title": e["title"], "field": e.get("field", ""), "type": e["type"],
                 "location": e["location"], "open_to": e.get("open_to")} for n, e in enumerate(entries)]
     system = f"""You decide which opportunities are relevant to this student, and how well.
 {profile_text}
 
-Step 1. Work out the student's TARGET FIELDS:
-- If their search request names a field, sector, role, company or city, that is the target and it OVERRIDES their profile interests.
-- If the request is generic (for example "find spring weeks and internships for me"), use their interests.
-- If they gave no interests, use their degree and CV.
+Step 1. Work out the student's TARGET FIELDS from the three things they gave:
+- The search request, if it names a field, sector, role, company or city, is the target and it OVERRIDES their profile interests.
+- If the request is generic (for example "find spring weeks and internships for me"), the INTERESTS are the target.
+- If they gave no interests, use their degree.
+- The CV never adds fields. It only tells you how well a programme in a target field fits this student (relevant projects, skills, modules), so use it to separate good fits from weaker ones inside the target fields.
 
 Step 2. For every programme, set match by comparing the programme's field (and its title) with the target fields:
 - strong: the programme is in a target field. A technology or engineering stream at a bank counts as software engineering; a quant stream at a hedge fund counts as quant.
 - partial: a clearly adjacent field (for example data science or machine learning for a software engineer), or a general programme that has a stream in a target field.
-- none: a different field, even from a famous employer. For a software engineering student, investment banking, markets, trading, consulting, audit, law and similar programmes with no engineering stream are none. For a finance student, pure software roles are none.
+- none: a different field, even from a famous employer. For a quant student, quant trading, quant research, quant development, systematic or algorithmic trading, market making and risk or pricing quant roles are strong; software engineering or data science at a trading firm is partial; investment banking, general markets, consulting, audit, law and generic graduate programmes are none. For a software engineering student, investment banking, markets, trading, consulting, audit, law and similar programmes with no engineering stream are none. For a finance student, pure software roles are none.
 
-Step 3. Give a score from 0 to 10 for how good a fit it is overall (field first, then kind of programme, location, and how well-known it is). Make scores differ so the order is meaningful.
+Step 3. Give a score from 0 to 10 for how good a fit it is overall (field first, then kind of programme, location, and how well-known it is). Make scores differ so the order is meaningful. Inside the target fields, add up to 2 points when the CV clearly supports the programme.
 Every programme listed is already open to the student's year of study, so do not mark them down for that. Be strict about match: when in doubt between partial and none, ask whether the student would be glad to see it. Give a one-sentence reason that names the field."""
     scores = {}
 
@@ -707,7 +719,10 @@ Today is {now:%d %B %Y}.
 Write 10 to 12 different queries for the current application cycle (programmes running in {now.year + 1}).
 Only target programmes the student can actually attend and apply to from their location; do not search other countries unless they are online or the search request asks for them.
 Tailor every query to THIS student's stage, wording it the way employers do for them (e.g. "first year spring week", "insight programme first year undergraduate", "penultimate year summer internship", "final year" ...). Never write queries for stages they are not in, and never for PhDs, masters or graduate schemes unless that is their stage.
-If the search request is specific (a sector, company, city or type), at least half of the queries must target exactly that. Otherwise spread them over the student's interests and CV.
+The student gave three things: a search request (their words just now), their interests, and their CV. Use them like this.
+TARGET FIELDS: the field the search request names, if it names one; otherwise the student's interests. Every query and every employer must serve the target fields, and nothing else.
+The CV decides which sub-areas, skills and employers inside the target fields suit them best (for a quant student with machine learning projects: quant research and systematic trading). Never write a query for a field the student did not choose just because their degree or CV could also fit it.
+If the search request is specific (a sector, company, city or type), at least half of the queries must target exactly that.
 - broad ones per wanted type and location, e.g. "spring week {now.year + 1} UK", "summer internship {now.year + 1} London penultimate year"
 - several per interest field, e.g. "technology spring week {now.year + 1}", "quant trading internship {now.year + 1} UK"
 - several naming specific well-known employers in their fields (one or two employers per query)
@@ -716,7 +731,7 @@ Do not repeat yourself; each query should find different programmes.
 
 RELEVANCE IS STRICT. Work out the student's target fields: the search request if it names a field, sector, company or city; otherwise their interests; if neither is given, their degree and CV. Every query and every employer must serve those fields. For example, for a student interested in software engineering write queries such as "software engineering spring insight 2027" and list technology companies and the technology divisions of banks, and do NOT write finance, banking, consulting or trading queries or employers. For a quant or finance student, do the opposite.
 
-Also list 25 to 30 real employers, names only, that run the wanted programme types for a student at this stage (e.g. for a first year: banks, asset managers, trading firms, consultancies, tech companies, law firms, engineering firms, as fits their interests and degree), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
+Also list 25 to 30 real employers, names only, that run the wanted programme types for a student at this stage (only employers whose programmes are in the TARGET FIELDS above, for example trading firms, market makers and quant hedge funds for a quant student; do not pad the list with banks, consultancies, law firms or tech companies that run nothing in those fields), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
     try:
         plan = await asyncio.wait_for(ask([{"role": "system", "content": plan_system},
                                            {"role": "user", "content": query or "Find opportunities for me"}], SearchPlan, model=FAST_MODEL), 10)
@@ -854,14 +869,15 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     scores = await _rank(entries, profile_text, seconds=min(22, left(8)))
     for n, e in enumerate(entries):
         s = scores.get(n)
-        e["score"], e["why"] = (s.score, s.reason) if s else (5, "")
+        e["score"], e["why"] = (s.score, s.reason) if s else (3, "")
     for n, e in enumerate(entries):
-        e["match"] = scores[n].match if n in scores else "partial"  # if the scorer ran out of time, keep it rather than lose it
+        e["match"] = scores[n].match if n in scores else "partial"  # the scorer ran out of time: it can only fill a gap, never push out a strong match
     for e in entries:
         if e["match"] == "none" or e["score"] < MIN_SCORE:
             print(f"[search] dropped, not relevant to your interests or search ({e['match']}, {e['score']}/10): {e['company']} - {e.get('field') or e['title'][:50]}", file=sys.stderr)
     entries = [e for e in entries if e["match"] != "none" and e["score"] >= MIN_SCORE]
     entries.sort(key=lambda e: (e["match"] != "strong", -e["score"], e["deadline"]))  # strong matches first
+    entries = _keep_relevant(entries)
 
     # 6. Read each programme's own page: is the link alive, and have applications actually opened?
     pool = entries[: max_results * 4]  # spares, since closed, not-yet-open and dead ones are dropped here
@@ -1052,6 +1068,44 @@ def _summary_of(item: dict) -> str:
 
 
 async def _schedule_blocks(items: list[dict]) -> list[dict]:
+    """Finds a slot for every block (see _find_slots), then puts all the new events into Google Calendar in one batch request."""
+    queued: list = []
+    results = await _find_slots(items, queued)
+    await _flush_inserts(queued, results)
+    return results
+
+
+async def _flush_inserts(queued: list, results: list[dict]) -> None:
+    if not queued:
+        return
+    service = queued[0][2]
+    by_index = {r["index"]: r for r in results}
+
+    def fail(i, why):
+        by_index[i].update(status="failed", reason=f"Google Calendar did not accept it: {why}", event_id=None, link=None)
+
+    def done(i, event):
+        by_index[i].update(event_id=event.get("id"), link=event.get("htmlLink"))
+
+    def run():
+        if hasattr(service, "new_batch_http_request"):  # one round trip for up to 50 events, instead of one each
+            for n in range(0, len(queued), 50):
+                batch = service.new_batch_http_request()
+                for i, body, _ in queued[n:n + 50]:
+                    batch.add(service.events().insert(calendarId=CALENDAR_ID, body=body),
+                              callback=lambda _rid, resp, exc, i=i: fail(i, exc) if exc else done(i, resp))
+                batch.execute()
+        else:
+            for i, body, _ in queued:
+                try:
+                    done(i, service.events().insert(calendarId=CALENDAR_ID, body=body).execute())
+                except Exception as exc:
+                    fail(i, exc)
+
+    await asyncio.get_running_loop().run_in_executor(None, run)
+
+
+async def _find_slots(items: list[dict], queued: list) -> list[dict]:
     """The slot finder. Every item is one block: the model proposes a slot, the code enforces the rules.
     Item fields: title, deadline (the block must end an hour before it), block_kind, company, summary, earliest,
     exact_minutes, fixed_start (booked as is), colour_id, url, details, application_id (handed back untouched).
@@ -1151,7 +1205,7 @@ async def _schedule_blocks(items: list[dict]) -> list[dict]:
             body["colorId"] = str(it["colour_id"])
         if it.get("resource_url"):  # Google Calendar shows this as a link on the event
             body["source"] = {"title": it.get("resource_label") or "Practice", "url": it["resource_url"]}
-        event = service.events().insert(calendarId=CALENDAR_ID, body=body).execute()
+        queued.append((i, body, service))  # inserted together at the end, in one batch
         busy.append((start, end))
         per_day[start.astimezone(LONDON).date()] += 1
         if kind == "apply":
@@ -1159,8 +1213,8 @@ async def _schedule_blocks(items: list[dict]) -> list[dict]:
         if kind not in FIXED_KINDS:
             company_days[(owner_of(i), start.astimezone(LONDON).date())] += 1
         pending.discard(i)
-        result(i, "booked", start=start.isoformat(), end=end.isoformat(), event_id=event.get("id"),
-               link=event.get("htmlLink"), reason=reason, colour_id=it.get("colour_id"),
+        result(i, "booked", start=start.isoformat(), end=end.isoformat(), event_id=None,
+               link=None, reason=reason, colour_id=it.get("colour_id"),
                resource_url=it.get("resource_url"), resource_label=it.get("resource_label"))
 
     # Blocks already in the calendar from an earlier run are not booked twice; fixed-time blocks go in as they are
@@ -1288,30 +1342,54 @@ async def _schedule_blocks(items: list[dict]) -> list[dict]:
                   "so avoid overlapping them too and respect every hard rule."
             )})
 
-    # Last resort, so a rule-abiding slot is still found when the model keeps missing: earliest valid slot, in code
+    # Last resort, in code. A block is never left unbooked just because the calendar is busy: the soft limits give way one at a time,
+    # and the hard rules (no clashes, 15 minutes around events, 24 hours before an exam or interview, 08:00 to 22:00, within 30 days) never do.
+    #   tier 0: all rules      tier 1: lift the two-blocks-a-day limit      tier 2: practice may go beyond its ten-day window
+    #   tier 3: allow a second block for the same company on one day       tier 4: shorten the block to 30 minutes
+    def tier_problem(i, start, end, tier):
+        deadline, per, company = deadlines[i], per_day, company_days
+        if tier >= 1:
+            per = Counter()
+        if tier >= 2 and _kind_of(items[i]) not in ("apply",) + tuple(FIXED_KINDS):
+            deadline = max(deadline, now + timedelta(days=30))
+        if tier >= 3:
+            company = None
+        return _slot_problem(start, end, now=now, deadline=deadline, busy=busy, important=important, owner=owner_of(i),
+                             per_day=per, earliest=earliest_of(i), company_days=company)
+
+    TIER_NOTE = ["earliest free slot that keeps clear of your other events",
+                 "earliest free slot (your calendar was busy, so this is on a day that already has two blocks)",
+                 "earliest free slot (your calendar was busy, so this is later than usual)",
+                 "earliest free slot (your calendar was busy, so this shares a day with another block for the same company)",
+                 "earliest free slot (your calendar was busy, so this one is a short 30-minute block)"]
     for i in sorted(pending, key=order):
         if blocked(i):
             continue
-        length = timedelta(hours=hours_for(i, 1.0))
         found = None
-        first_day = now.astimezone(LONDON).date()
-        for offset in range(31):
-            day = first_day + timedelta(days=offset)
-            for minutes in range(9 * 60, 21 * 60 + 1, 30):
-                start = datetime.combine(day, time(0, 0), tzinfo=LONDON).astimezone(timezone.utc) + timedelta(minutes=minutes)
-                if not problem(i, start, start + length):
-                    found = (start, start + length)
+        for tier in range(5):
+            length = timedelta(hours=hours_for(i, 1.0))
+            if tier >= 4:
+                length = min(length, timedelta(minutes=30))
+            first_day = now.astimezone(LONDON).date()
+            for offset in range(31):
+                day = first_day + timedelta(days=offset)
+                for minutes in range(DAY_START_H * 60, DAY_END_H * 60 + 1, 30):
+                    start = datetime.combine(day, time(0, 0), tzinfo=LONDON).astimezone(timezone.utc) + timedelta(minutes=minutes)
+                    if not tier_problem(i, start, start + length, tier):
+                        found = (start, start + length, tier)
+                        break
+                if found:
                     break
             if found:
                 break
         if found:
-            book_event(i, found[0], found[1], "earliest free slot that keeps clear of your other events")
+            book_event(i, found[0], found[1], TIER_NOTE[found[2]])
 
     for i in sorted(pending):
         if blocked(i):
             result(i, "skipped", reason="no slot was found for the Apply block, so practice was not booked")
         else:
-            result(i, "failed", reason="no valid slot before its deadline")
+            result(i, "failed", reason="your calendar has no free time in the next 30 days that keeps clear of your events")
     return [out[i] for i in sorted(out)]
 
 

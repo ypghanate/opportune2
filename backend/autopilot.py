@@ -300,7 +300,7 @@ async def _discover(user_id: int, profile: dict, summary: dict, force: bool = Fa
     set_activity(user_id, "Planner Agent asked the Researcher to search for new programmes…" if planner.ENABLED else "Researcher is searching for new programmes…", "researcher")
     db.log_action(user_id, "discover_start", "Searching for new programmes.")  # written first, so a failure is not retried every tick
     try:
-        result = await runner.search(user_id, profile, cv_path, "Find new spring weeks and internships for me.", ["internship", "spring_week"])
+        result = await runner.search(user_id, profile, cv_path, db.last_search_prompt(user_id) or "Find new spring weeks and internships for me.", ["internship", "spring_week"])
     except Exception as e:
         log.exception("Weekly search failed for user %s", user_id)
         db.log_action(user_id, "discover_failed", f"The search did not finish: {runner.describe(e)} I will try again in a few hours.")

@@ -147,11 +147,7 @@ function Card({ app, onChange }) {
       ) : (
         <div className="stage-actions">
           {next && <button className="pill pill-solid pill-sm" disabled={busy} onClick={() => move(next)}>{NEXT_LABEL[next]}</button>}
-          <label className="visually-hidden" htmlFor={`mv-${app.id}`}>Move {app.company} to another stage</label>
-          <select id={`mv-${app.id}`} className="stage-select" value="" disabled={busy} onChange={(e) => e.target.value && move(e.target.value)}>
-            <option value="">Move to…</option>
-            {[...COLUMNS, ["withdrawn", "Withdrawn"]].filter(([s]) => s !== app.stage).map(([s, label]) => <option key={s} value={s}>{label}</option>)}
-          </select>
+          {app.stage !== "withdrawn" && <button className="link-btn" disabled={busy} onClick={() => move("withdrawn")}>Withdraw</button>}
         </div>
       )}
 

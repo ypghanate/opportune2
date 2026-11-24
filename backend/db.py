@@ -454,8 +454,16 @@ def get_log(user_id: int, limit: int = 40) -> list[dict]:
     with conn() as c:
         rows = c.execute(
             "SELECT l.*, a.company, a.colour_id FROM agent_log l LEFT JOIN applications a ON a.id = l.application_id "
-            "WHERE l.user_id = ? AND l.kind != 'planner_run' ORDER BY l.id DESC LIMIT ?", (user_id, limit)).fetchall()
+            "WHERE l.user_id = ? AND l.kind NOT IN ('planner_run', 'search_prompt') ORDER BY l.id DESC LIMIT ?", (user_id, limit)).fetchall()
     return [{**dict(r), "colour": HEX_OF.get(r["colour_id"])} for r in rows]
+
+
+def last_search_prompt(user_id: int, days: int = 14) -> str:
+    """What the student typed the last time they ran the agent (within `days`), so the background searches stay on the same topic."""
+    with conn() as c:
+        row = c.execute("SELECT message FROM agent_log WHERE user_id = ? AND kind = 'search_prompt' AND created_at > datetime('now', ?) ORDER BY id DESC LIMIT 1",
+                        (user_id, f"-{int(days)} days")).fetchone()
+    return row["message"] if row else ""
 
 
 def annotate_log(user_id: int, after_id: int, reason: str):

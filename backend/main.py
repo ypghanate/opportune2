@@ -254,6 +254,8 @@ async def search(body: SearchIn, user=Depends(current_user)):
     if db.runs_today(user["id"]) >= config.MAX_RUNS_PER_DAY:
         raise HTTPException(429, f"You can run the agent {config.MAX_RUNS_PER_DAY} times per day. Try again tomorrow")
 
+    if body.query.strip():
+        db.log_action(user["id"], "search_prompt", body.query.strip()[:300])  # the background searches reuse it
     try:
         result = await runner.search(user["id"], profile, cv_path, body.query.strip(), cats)
     except RuntimeError as e:

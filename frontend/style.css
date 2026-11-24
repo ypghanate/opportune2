@@ -333,10 +333,12 @@ a.dh-stat:hover { outline: 1px solid var(--accent); }
 .checkin-actions { gap: 6px 12px; font-size: 0.88rem; }
 
 /* applications: the board is the main thing; the Planner Agent panels sit below it */
-.agent-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-top: 28px; align-items: start; }
-.agent-panels .tile { margin: 0; padding: 16px 18px; }
+.agent-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-top: 28px; align-items: stretch; }
+.agent-panels .tile { margin: 0; padding: 16px 18px; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; }
 .agent-panels h2 { font-size: 1.05rem; }
 .agent-panels .thinking-text { font-size: 0.98rem; line-height: 1.5; }
 .agent-panels .concerns { font-size: 0.92rem; }
 .agent-panels .status-list li { font-size: 0.92rem; }
-.agent-panels .status-list li.main { font-size: 1.05rem; }
+.agent-panels .status-list li.main { font-size: 0.98rem; }
+.agent-panels .tile > small { margin-top: auto; }
+.stage-actions { align-items: center; }

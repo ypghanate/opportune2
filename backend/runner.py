@@ -243,35 +243,56 @@ async def _execute(run: Run, profile: dict, cv_path: str, query: str, categories
         db.finish_run(run.id, run.status)
 
 
-SEARCH_TIMEOUT = 8 * 60
+SEARCH_TIMEOUT = 3 * 60
 
 
 async def search(user_id: int, profile: dict, cv_path: str, query: str, categories: list[str]) -> dict:
-    """Runs the agent until it has a list of things to book, hands that list back, and ends the run.
+    """Runs the search tool directly (no language-model turns around it, which used to add two slow calls) and hands back the list.
 
     Nothing is booked here. The user approves later, and book() does the booking.
     Returns {"items": [raw item dicts], "message": str}.
     """
-    run = start(user_id, profile, cv_path, query, categories)
-    waited = 0.0
-    while run.status == "running" and waited < SEARCH_TIMEOUT:
-        await asyncio.sleep(0.5)
-        waited += 0.5
-
-    if run.status == "awaiting_approval":
-        approval = next(e for e in reversed(run.events) if e["type"] == "approval")
-        items = [i["raw"] for i in approval["items"]]
-        run.approve([])  # finish the graph without booking anything
-        await asyncio.wait_for(run.task, 30)
-        summary = next((e.get("summary") for e in reversed(run.events) if e["type"] == "done"), "")
-        return {"items": items, "message": summary}
-    if run.status == "done":  # the agent found nothing it could schedule
-        done = next(e for e in reversed(run.events) if e["type"] == "done")
-        return {"items": [], "message": done.get("summary") or ""}
-    if run.status == "error":
-        raise RuntimeError(next(e["message"] for e in reversed(run.events) if e["type"] == "error"))
-    run.task.cancel()
-    raise RuntimeError("The search took too long. Try a narrower request")
+    if active_run_for(user_id):
+        raise RuntimeError("A search is already running. Wait for it to finish")
+    run = Run(user_id)
+    RUNS[run.id] = run
+    db.create_run(run.id, user_id)
+    try:
+        eligibility = {
+            "graduation_year": profile["graduation_year"], "location": profile["location"],
+            "year_of_study": profile.get("year", ""), "degree": profile.get("degree", ""),
+            "university": profile.get("university", ""), "gender": profile.get("gender", ""),
+        }
+        args = {
+            "cv_file_path": cv_path,
+            "interests": ", ".join(profile.get("interests") or []) or "not given",
+            "eligibility_info": eligibility,
+            "query": query or "Find spring weeks and internships for me.",
+            "types": [TYPE_WORDS.get(c, c.replace("_", " ")) for c in categories],
+        }
+        async with _mcp_tools(user_id) as all_tools:
+            tool = next(t for t in all_tools if t.name == "search_opportunities")
+            found = extract_items(await asyncio.wait_for(tool.ainvoke(args), SEARCH_TIMEOUT))
+        errors = [f["error"] for f in found if f.get("error")]
+        items = [f for f in found if f.get("title") and not f.get("error") and (f.get("deadline") or f.get("watch"))]
+        if errors and not items:
+            raise RuntimeError(errors[0])
+        if not items:
+            message = "I searched widely but found nothing open that fits you right now."
+        else:
+            names = ", ".join(i["title"] for i in items[:3])
+            message = f"Found {len(items)} opportunities that fit you, including {names}."
+        run.status = "done"
+        return {"items": items, "message": message}
+    except asyncio.TimeoutError:
+        run.status = "error"
+        raise RuntimeError("The search took too long. Try a narrower request")
+    except Exception:
+        run.status = "error"
+        raise
+    finally:
+        run.finished_at = time.time()
+        db.finish_run(run.id, run.status)
 
 
 async def _call(user_id: int, name: str, args: dict):
