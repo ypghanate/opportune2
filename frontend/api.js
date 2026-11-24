@@ -13,9 +13,11 @@ export const setToken = (t) => {
 };
 
 // The first time you run the agent in a visit starts the clock for the suggestion pop-ups (checkin.jsx).
-export const RAN_KEY = "opportune.visit.ranAt";
+// Kept in memory only, so reloading the page starts a fresh visit: no suggestions until you run the agent again.
+let ranAt = 0;
+export const getRanAt = () => ranAt;
 export const markAgentRun = () => {
-  try { if (!sessionStorage.getItem(RAN_KEY)) sessionStorage.setItem(RAN_KEY, String(Date.now())); } catch { /* private mode */ }
+  if (!ranAt) ranAt = Date.now();
   window.dispatchEvent(new Event("opportune:agent-run"));
 };
 

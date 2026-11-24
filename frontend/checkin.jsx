@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { api, RAN_KEY } from "./api.js";
+import { api, getRanAt } from "./api.js";
 
 const KIND = {
   apply: "Apply", practice: "Practice", oa: "OA", test: "Test", interview_prep: "Interview prep",
@@ -7,9 +7,8 @@ const KIND = {
 };
 const FIRST_MS = 95_000;   // the first suggestion shows this long after you first run the agent in a visit
 const EVERY_MS = 180_000;  // after that, at most one new-opportunity pop-up every 3 minutes
-const QUIET_KEY = "opportune.suggest.quiet";
-const readRan = () => { try { return Number(sessionStorage.getItem(RAN_KEY)) || 0; } catch { return 0; } };
-const readQuiet = () => { try { return Number(sessionStorage.getItem(QUIET_KEY)) || 0; } catch { return 0; } };
+const readRan = () => getRanAt();
+const readQuiet = () => 0; // a reload starts a fresh visit, so nothing is resting
 const FIXED = ["interview", "assessment_centre"];
 const clock = (iso) => new Date(iso).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
@@ -71,7 +70,6 @@ export default function CheckIn({ path }) {
   function goQuiet() {
     const until = Math.max(shownAt.current.at, Date.now() - EVERY_MS + 1000) + EVERY_MS;  // 3 minutes after the last one appeared
     setQuietUntil(until);
-    try { sessionStorage.setItem(QUIET_KEY, String(until)); } catch { /* private mode: the state still works */ }
   }
   useEffect(() => { // wake up when the quiet time ends so the next suggestion can show
     const left = holdUntil - Date.now();

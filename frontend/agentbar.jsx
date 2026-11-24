@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api, RAN_KEY } from "./api.js";
+import { api, getRanAt } from "./api.js";
 
 const mins = (iso, now) => Math.round((new Date(iso) - now) / 60000);
 const ago = (iso, now) => { const m = -mins(iso, now); return m < 1 ? "just now" : m === 1 ? "1 min ago" : m < 60 ? `${m} mins ago` : `${Math.round(m / 60)} h ago`; };
@@ -23,7 +23,7 @@ export default function AgentBar() {
 
   if (!p) return null;
   const lines = [];
-  const ran = (() => { try { return !!sessionStorage.getItem(RAN_KEY); } catch { return true; } })();
+  const ran = !!getRanAt();
   const live = p.awake && p.activity && (ran || p.activity.who !== "researcher"); // a new visit starts quiet until you run the agent
   if (!p.awake) {
     lines.push("Asleep. The server is waking up, or the background loop is off.");
