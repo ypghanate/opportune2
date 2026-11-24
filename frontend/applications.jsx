@@ -180,6 +180,7 @@ export default function Applications() {
   const [showWithdrawn, setShowWithdrawn] = useState(false);
   const [status, setStatus] = useState([]);
   const [thinking, setThinking] = useState(null);
+  const [showAgent, setShowAgent] = useState(false);
 
   const load = useCallback(() => {
     api.applications().then(setApps).catch((e) => setError(e.message));
@@ -210,6 +211,31 @@ export default function Applications() {
     <main className="wrap inner">
       <h1>Applications</h1>
       <p className="lede">Every company you are applying to, with its stage. Each has its own colour in your calendar and its own set of blocks.</p>
+      {(thinking?.assessment || thinking?.mode === "rules" || status.length > 0) && (
+        <section className="planner-strip" aria-label="Planner Agent">
+          <div className="planner-strip-top">
+            <span className={`tag ${thinking?.mode === "rules" ? "" : "tag-ok"}`}>{thinking?.mode === "rules" ? "Simple rules" : "Planner Agent"}</span>
+            <p className={`planner-strip-text${showAgent ? " open" : ""}`}>
+              {thinking?.assessment || (thinking?.mode === "rules" ? "The planner hit a problem, so I am using simple rules for now." : (status.find((x) => x.key === "planner")?.text || "Watching your plan."))}
+            </p>
+            <button className="link-btn" aria-expanded={showAgent} onClick={() => setShowAgent(!showAgent)}>{showAgent ? "Hide details" : "Details"}</button>
+          </div>
+          {thinking?.at && <small className="muted">Looked at {new Date(thinking.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}. I look again whenever something changes.</small>}
+          {showAgent && (
+            <div className="planner-strip-more">
+              {thinking?.concerns?.length > 0 && <ul className="concerns">{thinking.concerns.map((c) => <li key={c}>{c}</li>)}</ul>}
+              <ul className="status-list">
+                {status.filter((x) => x.key !== "planner").map((x) => (
+                  <li key={x.key} className={x.on ? "on" : ""}>
+                    <span className="status-dot" aria-hidden="true" />
+                    <span><strong>{x.title}.</strong> {x.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
       {error && <p className="notice notice-err" role="alert">{error}</p>}
       {warnings.map((w) => <p key={w} className="notice notice-err" role="alert">{w}</p>)}
       {!apps && !error && <p className="muted">Loading…</p>}
@@ -234,34 +260,6 @@ export default function Applications() {
           {showWithdrawn && <ul className="kan-list kan-withdrawn">{withdrawn.map((a) => <Card key={a.id} app={a} onChange={changed} />)}</ul>}
         </>
       )}
-      <div className="agent-panels">
-      {thinking && (thinking.assessment || thinking.mode === "rules") && (
-        <section className="tile thinking" aria-label="How the agent sees your plan">
-          <div className="agent-head">
-            <h2>How I see your plan</h2>
-            <span className={`tag ${thinking.mode === "rules" ? "" : "tag-ok"}`}>{thinking.mode === "rules" ? "Using simple rules" : "Planner Agent on"}</span>
-          </div>
-          {thinking.assessment
-            ? <p className="thinking-text">{thinking.assessment}</p>
-            : <p className="muted">The planner hit a problem, so I am using simple rules for now.</p>}
-          {thinking.concerns?.length > 0 && (
-            <ul className="concerns">{thinking.concerns.map((c) => <li key={c}>{c}</li>)}</ul>
-          )}
-          {thinking.at && <small className="muted">Looked at {new Date(thinking.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}. I look again whenever something changes: a new event, a finished block, a programme opening, or an answer from you.</small>}
-        </section>
-      )}
-      <section className="tile agent-log" aria-label="What the agent is doing now">
-        <h2>What the agent is doing now</h2>
-        <ul className="status-list">
-          {status.map((s) => (
-            <li key={s.key} className={`${s.on ? "on" : ""} ${s.key === "planner" ? "main" : ""}`}>
-              <span className="status-dot" aria-hidden="true" />
-              <span><strong>{s.title}.</strong> {s.text}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-      </div>
     </main>
   );
 }

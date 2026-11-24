@@ -342,3 +342,13 @@ a.dh-stat:hover { outline: 1px solid var(--accent); }
 .agent-panels .status-list li.main { font-size: 0.98rem; }
 .agent-panels .tile > small { margin-top: auto; }
 .stage-actions { align-items: center; }
+
+/* Planner Agent strip above the board */
+.planner-strip { background: var(--panel); border-radius: var(--radius-md); border-left: 4px solid var(--accent); padding: 12px 16px; margin: 0 0 18px; display: grid; gap: 6px; }
+.planner-strip-top { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.planner-strip-text { margin: 0; flex: 1 1 320px; font-size: 0.95rem; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.planner-strip-text.open { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.planner-strip small { font-size: 0.82rem; }
+.planner-strip-more { display: grid; gap: 10px; margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--pill); }
+.planner-strip .concerns { font-size: 0.9rem; }
+.planner-strip .status-list li { font-size: 0.9rem; }

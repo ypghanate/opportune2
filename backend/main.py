@@ -160,7 +160,7 @@ async def upload_cv(file: UploadFile = File(...), user=Depends(current_user)):
     path = folder / f"cv{ext}"
     path.write_bytes(data)
     original = Path(file.filename).name[:120]
-    db.set_cv(user["id"], str(path), original)
+    db.set_cv(user["id"], str(path), original, data)
     return {"ok": True, "filename": original}
 
 
