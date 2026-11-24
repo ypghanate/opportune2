@@ -1,9 +1,15 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { api, setToken } from "./api.js";
 import { useMeta, fullNameError, inList } from "./meta.js";
 
 export default function AuthPage({ onAuth }) {
   const [isNew, setIsNew] = useState(location.hash.includes("?new"));
+  // "Get started" in the menu links to #/auth?new: follow the address when it changes while this page is already open.
+  useEffect(() => {
+    const onHash = () => { if (location.hash.startsWith("#/auth")) setIsNew(location.hash.includes("?new")); };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   const [form, setForm] = useState({ email: "", password: "", name: "", university: "", degree: "" });
   const { meta, error: metaError } = useMeta();
   const [error, setError] = useState("");
@@ -78,7 +84,7 @@ export default function AuthPage({ onAuth }) {
         </button>
         <p className="muted center">
           {isNew ? "Already have an account?" : "New to Opportune?"}{" "}
-          <button type="button" className="link" onClick={() => { setIsNew(!isNew); setError(""); }}>
+          <button type="button" className="link" onClick={() => { history.replaceState(null, "", isNew ? "#/auth" : "#/auth?new"); setIsNew(!isNew); setError(""); }}>
             {isNew ? "Sign in" : "Create an account"}
           </button>
         </p>

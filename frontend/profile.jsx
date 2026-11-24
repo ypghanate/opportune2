@@ -3,6 +3,7 @@ import { api } from "./api.js";
 import { useMeta, fullNameError, inList } from "./meta.js";
 
 const YEARS = ["First year", "Second year", "Third year", "Final year", "Postgraduate"];
+const DRAFT_KEY = "opportune.profile.draft";
 const EMPTY = { name: "", university: "", degree: "", year: "First year", graduation_year: 2029, location: "London", gender: "", interests: "", autopilot: true };
 
 export default function Profile() {
@@ -18,7 +19,10 @@ export default function Profile() {
   useEffect(() => {
     api.getProfile()
       .then((p) => {
-        setForm({ ...EMPTY, ...p, interests: (p.interests || []).join(", ") });
+        let draft = null;
+        try { draft = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null"); sessionStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+        // Typed but unsaved answers (interests, gender, and so on) come back after the Google round trip; the CV and Google state come from the server.
+        setForm({ ...EMPTY, ...p, ...(draft || {}), interests: draft ? String(draft.interests ?? "") : (p.interests || []).join(", ") });
         setCv(p.cv_name || "");
         setGoogle(!!p.google_connected);
       })
@@ -37,6 +41,8 @@ export default function Profile() {
   async function connectGoogle() {
     setMsg(null);
     try {
+      // Going to Google leaves this page, so save what is typed first. If it is not valid yet, keep it as a draft and restore it on return.
+      try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify(form)); } catch { /* storage unavailable */ }
       const { url } = await api.googleConnect();
       location.href = url;
     } catch (err) {
