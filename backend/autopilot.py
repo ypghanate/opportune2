@@ -281,9 +281,22 @@ def _announce(user_id: int, rows: list[dict]) -> int:
     return made
 
 
+NEEDS_SEARCH = os.environ.get("DISCOVER_NEEDS_SEARCH", "1") != "0"  # the background search only runs once the student has run the agent themselves
+
+
+def searched_lately(user_id: int) -> bool:
+    """True when the student has run the agent within the last SESSION_GAP_HOURS. Until then nothing searches on its own."""
+    if not NEEDS_SEARCH:
+        return True
+    last = _parse(db.last_log_time(user_id, "search_prompt"))
+    return bool(last) and datetime.now(timezone.utc) - last < timedelta(hours=SESSION_GAP_HOURS)
+
+
 async def _discover(user_id: int, profile: dict, summary: dict, force: bool = False, auto_plan: bool = True, announce: bool = True):
     """Search again, save what is new, and (when auto_plan) book the clearly good, open ones. Called by the Planner Agent every few hours."""
     import planner
+    if not searched_lately(user_id):
+        return  # a new visit starts quiet: the agent does not search until you have run it
     if not force and (not DISCOVER_EVERY_HOURS or not profile.get("autopilot", True)):
         return
     last = _parse(db.last_log_time(user_id, "discover"))
@@ -484,7 +497,7 @@ def pulse(user_id: int) -> dict:
     return {"awake": awake, "doing": doing, "activity": act, "watching": watching, "planner": bool(planner.ENABLED),
             "every_min": INTERVAL_MIN, "last_look": last.isoformat() if last else None,
             "next_look": (last + timedelta(minutes=INTERVAL_MIN)).isoformat() if last and INTERVAL_MIN else None,
-            "next_search": nxt(last_s, DISCOVER_EVERY_HOURS), "next_watch": nxt(last_w, WATCH_EVERY_HOURS), "now": now.isoformat()}
+            "next_search": nxt(last_s, DISCOVER_EVERY_HOURS) if searched_lately(user_id) else None, "next_watch": nxt(last_w, WATCH_EVERY_HOURS), "now": now.isoformat()}
 
 
 SESSION_GAP_HOURS = float(os.environ.get("SESSION_GAP_HOURS", "6"))  # a search after this long without one starts a "new session"

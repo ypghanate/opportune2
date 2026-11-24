@@ -432,6 +432,7 @@ async def run_agent_now(user=Depends(current_user)):
     _last_manual[user["id"]] = time.time()
     if not db.get_google_token(user["id"]):
         raise HTTPException(400, "Connect your Google account on the Profile page first")
+    db.log_action(user["id"], "search_prompt", db.last_search_prompt(user["id"]) or "Find new spring weeks and internships for me.")  # running the agent counts as a search
     done = await autopilot.tick(user["id"], force=True)
     return {"done": done}
 
