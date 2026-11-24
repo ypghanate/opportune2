@@ -8,12 +8,17 @@ const WHAT = [
   ["Tracks each application", "A board shows where every company is, from To apply through to Offer."],
 ];
 
-const AUTO = [
-  ["Thinks for itself", "The Planner Agent reads your whole situation: deadlines, exams, what you've finished. It decides what matters most, acts, and tells you why. When it isn't sure, it asks you."],
-  ["Repairs clashes", "Add a lecture, shift or society event, even on another calendar. If it lands on one of your blocks, the agent moves that block to the next free slot. Interviews are never moved."],
-  ["Watches for new openings", "It waits on programmes that haven't opened yet and looks again every hour, and asks the Researcher for new ones every 2 hours using your interests. The Planner Agent then pops up at the top to suggest the good ones, or tell you why it would skip one. When one opens, it books time to apply."],
-  ["Reschedules when you go quiet", "After each block it asks whether you applied or did your practice. Say no, or don't answer, and it finds a new slot."],
-  ["Chases you", "When a block ends, it asks whether you did it. No answer? It nudges you again and again, then books it for you once more."],
+const AGENTS = [
+  { name: "Researcher", role: "Finds opportunities for you", tag: "Live", points: ["Searches the web for spring weeks and internships", "Drops closed, wrong-year and out-of-area listings", "Looks again every 2 hours"] },
+  { name: "Planner Agent", role: "Takes care of everything else", tag: "Live", main: true, points: ["Suggests the good finds, or says why it would skip one", "Books every stage in your calendar", "Moves sessions when something clashes", "Chases you when you go quiet"] },
+  { name: "Application Filler", role: "Fills in the forms for you", tag: "Coming soon", soon: true, points: ["Reads your CV and profile", "Pre-fills application forms", "You review before anything is sent"] },
+];
+
+const SYNC = [
+  ["Researcher finds", "New programmes that fit your interests"],
+  ["Planner reviews", "Recommends it, or tells you why not"],
+  ["You approve", "One tap in the pop-up"],
+  ["Planner looks after it", "Books, reschedules, chases"],
 ];
 
 const STEPS = [
@@ -28,9 +33,10 @@ export default function Overview({ authed }) {
   return (
     <main>
       <section className="wrap hero">
+        <p className="eyebrow">Personal agent ecosystem for all your applications</p>
         <h1>Your next opportunity starts <span className="accent">here.</span></h1>
         <p className="sub">
-          Opportune finds internships and spring weeks that fit you, plans every stage of each application in your
+          A team of agents finds internships and spring weeks that fit you, plans every stage of each application in your
           calendar, then keeps working in the background so nothing slips.
         </p>
         <div className="hero-actions">
@@ -54,16 +60,24 @@ export default function Overview({ authed }) {
       </section>
 
       <section className="wrap section" aria-labelledby="auto">
-        <h2 id="auto">What the agent does on its own</h2>
-        <p className="lede">Once you've approved your applications, you don't have to manage them. The Planner Agent watches your whole situation, decides what to do, and tells you why.</p>
-        <div className="cards">
-          {AUTO.map(([t, d]) => (
-            <div className="tile card" key={t}>
-              <h3>{t}</h3>
-              <p>{d}</p>
-            </div>
+        <h2 id="auto">Meet your agents</h2>
+        <p className="lede">Your personal agent ecosystem for all your applications. Two agents work together, a third is on the way, and you only make the decisions.</p>
+        <div className="agents">
+          {AGENTS.map((a) => (
+            <article className={`agent-card${a.main ? " main" : ""}${a.soon ? " soon" : ""}`} key={a.name}>
+              <span className="agent-tag">{a.tag}</span>
+              <h3>{a.name}</h3>
+              <p className="agent-role">{a.role}</p>
+              <ul>{a.points.map((p) => <li key={p}>{p}</li>)}</ul>
+            </article>
           ))}
         </div>
+        <ol className="sync" aria-label="How the agents work together">
+          {SYNC.map(([t, d], i) => (
+            <li key={t}><strong>{t}</strong><span>{d}</span></li>
+          ))}
+        </ol>
+        <p className="muted sync-note">They share one picture of your plan, so the Researcher never suggests something that clashes and the Planner always knows what is new. Interviews are never moved.</p>
       </section>
 
       <section className="wrap section" id="how" aria-labelledby="how-h">
