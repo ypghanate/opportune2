@@ -22,7 +22,7 @@ export default function Find() {
         const p = await api.progress("search");
         if (!stop && p && (p.stage || p.items)) setLive({ stage: p.stage || "", items: p.items || [] });
       } catch { /* keep waiting */ }
-    }, 1000);
+    }, 500);
     return () => { stop = true; clearInterval(t); };
   }, [run.phase]);
 
@@ -83,7 +83,7 @@ export default function Find() {
               {live.items.map((o, i) => (
                 <div key={`${o.company}-${i}`} className="live-row">
                   <div><strong>{o.title}</strong><small>{[o.company, o.location].filter(Boolean).join(" · ")}</small></div>
-                  <span className={`live-tag ${o.state === "checking" ? "live-checking" : ""}`}>{o.state === "checking" ? "Checking…" : o.watch ? "Watching out: not open yet" : o.open ? "Open now" : "Open, check the page"}</span>
+                  <span className={`live-tag ${o.state === "checking" || o.state === "ranking" ? "live-checking" : ""}`}>{o.state === "ranking" ? "Ranking…" : o.state === "checking" ? "Checking…" : o.watch ? "Watching out: not open yet" : o.open ? "Open now" : "Open, check the page"}</span>
                 </div>
               ))}
             </section>

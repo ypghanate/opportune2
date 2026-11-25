@@ -507,6 +507,30 @@ def _keep_relevant(entries: list[dict]) -> list[dict]:
     return strong + [e for e in entries if e["match"] != "strong" and e["score"] >= PARTIAL_MIN_SCORE]
 
 
+_BRANCH_WORDS = re.compile(r"\b(securities|capital|investments?|partners|asset management|markets|global|europe|emea|london|llc|lp)\b", re.I)
+
+
+def _same_firm(name: str) -> str:
+    """'Citadel' and 'Citadel Securities' are one firm for this purpose."""
+    return _company_key(_BRANCH_WORDS.sub(" ", name or ""))
+
+
+def _one_per_company(entries: list[dict]) -> list[dict]:
+    """One programme per company: the best scored, preferring one with a known location. The order of first appearance is kept."""
+    best: dict[str, dict] = {}
+    order: list[str] = []
+    for e in entries:
+        k = _same_firm(e.get("company") or e.get("title") or "") or str(id(e))
+        known_loc = str(e.get("location") or "").strip().lower() not in ("", "unknown")
+        rank = (e.get("score", 0), known_loc)
+        if k not in best:
+            best[k] = e
+            order.append(k)
+        elif rank > (best[k].get("score", 0), str(best[k].get("location") or "").strip().lower() not in ("", "unknown")):
+            best[k] = e
+    return [best[k] for k in order]
+
+
 async def _rank(entries: list[dict], profile_text: str, seconds: float = 12) -> dict[int, Score]:
     compact = [{"index": n, "company": e["company"], "title": e["title"], "field": e.get("field", ""), "type": e["type"],
                 "location": e["location"], "open_to": e.get("open_to")} for n, e in enumerate(entries)]
@@ -893,6 +917,11 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     if dropped:
         trail.append("dropped: " + ", ".join(f"{n} {why}" for why, n in dropped.most_common(5)))
 
+    # Show what has been found straight away, before the ranking finishes
+    for e in _one_per_company(entries)[:8]:
+        shown.append({"title": e["title"], "company": e["company"], "location": e.get("location"), "url": e.get("url"), "state": "ranking", "watch": False, "open": False})
+    say(f"Found {len(entries)} programmes. Picking the ones that fit you")
+
     # 5. Narrow down to what fits the student and their search
     say(f"Found {len(entries)} programmes. Picking the ones that fit you")
     scores = await _rank(entries, profile_text, seconds=min(22, left(8)))
@@ -912,16 +941,18 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     if before_rank - len(entries):
         trail.append(f"{before_rank - len(entries)} not relevant to your interests or search")
     entries.sort(key=lambda e: (e["match"] != "strong", -e["score"], e["deadline"]))  # strong matches first
-    kept_entries = _keep_relevant(entries)
+    kept_entries = _one_per_company(_keep_relevant(entries))
     if len(entries) - len(kept_entries):
         trail.append(f"{len(entries) - len(kept_entries)} adjacent to your field, set aside")
-    reserve = [e for e in entries if e not in kept_entries and e["score"] >= LOOSE_MIN_SCORE]  # only used if too few survive the checks
+    have = {_same_firm(e["company"]) for e in kept_entries}
+    reserve = _one_per_company([e for e in entries if e not in kept_entries and e["score"] >= LOOSE_MIN_SCORE and _same_firm(e["company"]) not in have])  # only used if too few survive the checks
     entries = kept_entries
 
     # 6. Read each programme's own page: is the link alive, and have applications actually opened?
     pool = entries[: max_results * 4]  # spares, since closed, not-yet-open and dead ones are dropped here
     # Show the best candidates straight away as "checking", then settle each one as its own page has been read
     by_url = {}
+    shown.clear()
     for e in pool[:10]:
         row = {"title": e["title"], "company": e["company"], "location": e.get("location"), "url": e.get("url"), "state": "checking", "watch": False, "open": False}
         by_url[e.get("url")] = row
@@ -965,7 +996,9 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     for tag, spares in (("loose", reserve), ("known", relevant_known), ("outside", ranked_out), ("known_other", other_known)):
         if len(usable) >= MIN_WANTED or left(4) <= 4:
             break
-        extra = [e for e in spares if id(e) not in tried][: (MIN_WANTED - len(usable)) * 3 + 2]
+        usable = _one_per_company(usable)
+        have = {_same_firm(u["company"]) for u in usable + upcoming}
+        extra = _one_per_company([e for e in spares if id(e) not in tried and _same_firm(e["company"]) not in have])[: (MIN_WANTED - len(usable)) * 3 + 2]
         tried.update(id(e) for e in extra)
         if not extra:
             continue
@@ -982,6 +1015,9 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     # confirmed-open programmes first, then the ones we could not confirm
     FILL_ORDER = {None: 0, "loose": 1, "known": 2, "outside": 3, "known_other": 4}
     usable.sort(key=lambda e: (FILL_ORDER[e.get("fill")], e["match"] != "strong", e.get("open_status") != "open", -e["score"], e["deadline"]))
+    usable = _one_per_company(usable)
+    taken = {_same_firm(u["company"]) for u in usable}
+    upcoming = _one_per_company([u for u in upcoming if _same_firm(u["company"]) not in taken])
     kept = usable[:max_results]
     gone = len(pool) - len([e for e in pool if e in usable or e in upcoming])
     if gone:
