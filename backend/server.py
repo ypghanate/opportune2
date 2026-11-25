@@ -1006,6 +1006,7 @@ BUFFER = timedelta(minutes=15)  # breathing space kept around every busy event
 IMPORTANT_GUARD = timedelta(hours=24)  # no block in the 24 hours before an exam, test, interview...
 MIN_BEFORE_DEADLINE = timedelta(hours=1)
 MAX_PER_DAY = 2  # at most this many new blocks on one day
+HARD_MAX_PER_DAY = 3  # when the calendar is busy the limit may stretch to this, never beyond
 IMPORTANT_WORDS = re.compile(
     r"\b(exams?|tests?|quiz|viva|interviews?|assessments?|midterms?|finals?|presentation|oral|deadline|submission|"
     r"coursework|hand[- ]?in|dissertation|thesis)\b",
@@ -1081,7 +1082,7 @@ def _is_free(e: dict) -> bool:
 
 
 def _slot_problem(start, end, *, now, deadline, busy, important, owner, per_day,
-                  earliest=None, company_days=None, fixed=False) -> str | None:
+                  earliest=None, company_days=None, fixed=False, max_per_day=MAX_PER_DAY) -> str | None:
     """Why a proposed block is not allowed, or None if it is fine. The rules live here, not just in the prompt."""
     ls, le = start.astimezone(LONDON), end.astimezone(LONDON)
     if start < now:
@@ -1100,8 +1101,8 @@ def _slot_problem(start, end, *, now, deadline, busy, important, owner, per_day,
     for s0, e0, own, title in important:
         if own != owner and start < e0 and end > s0 - IMPORTANT_GUARD:
             return f"is within 24 hours before (or during) '{title}' at {s0.isoformat()}"
-    if per_day[ls.date()] >= MAX_PER_DAY:
-        return f"would be block number {MAX_PER_DAY + 1} on {ls.date()}; use a different day"
+    if per_day[ls.date()] >= max_per_day:
+        return f"would be block number {max_per_day + 1} on {ls.date()}; use a different day"
     if company_days is not None and company_days[(owner, ls.date())] >= 1:
         return f"is on a day that already has a block for the same company ({ls.date()}); use a different day"
     return None
@@ -1392,21 +1393,21 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
 
     # Last resort, in code. A block is never left unbooked just because the calendar is busy: the soft limits give way one at a time,
     # and the hard rules (no clashes, 15 minutes around events, 24 hours before an exam or interview, 08:00 to 22:00, within 30 days) never do.
-    #   tier 0: all rules      tier 1: lift the two-blocks-a-day limit      tier 2: practice may go beyond its ten-day window
+    #   tier 0: all rules      tier 1: three blocks a day instead of two (never more)      tier 2: practice may go beyond its ten-day window
     #   tier 3: allow a second block for the same company on one day       tier 4: shorten the block to 30 minutes
+    # From tier 1 on, the quietest day that works is used, so a busy calendar spreads the blocks out instead of piling them on one day.
     def tier_problem(i, start, end, tier):
-        deadline, per, company = deadlines[i], per_day, company_days
-        if tier >= 1:
-            per = Counter()
+        deadline, company = deadlines[i], company_days
         if tier >= 2 and _kind_of(items[i]) not in ("apply",) + tuple(FIXED_KINDS):
             deadline = max(deadline, now + timedelta(days=30))
         if tier >= 3:
             company = None
         return _slot_problem(start, end, now=now, deadline=deadline, busy=busy, important=important, owner=owner_of(i),
-                             per_day=per, earliest=earliest_of(i), company_days=company)
+                             per_day=per_day, earliest=earliest_of(i), company_days=company,
+                             max_per_day=HARD_MAX_PER_DAY if tier >= 1 else MAX_PER_DAY)
 
     TIER_NOTE = ["earliest free slot that keeps clear of your other events",
-                 "earliest free slot (your calendar was busy, so this is on a day that already has two blocks)",
+                 "your calendar was busy, so this is on the quietest day that fits (a third block that day)",
                  "earliest free slot (your calendar was busy, so this is later than usual)",
                  "earliest free slot (your calendar was busy, so this shares a day with another block for the same company)",
                  "earliest free slot (your calendar was busy, so this one is a short 30-minute block)"]
@@ -1419,8 +1420,10 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
             if tier >= 4:
                 length = min(length, timedelta(minutes=30))
             first_day = now.astimezone(LONDON).date()
-            for offset in range(31):
-                day = first_day + timedelta(days=offset)
+            days = [first_day + timedelta(days=o) for o in range(31)]
+            if tier >= 1:
+                days.sort(key=lambda d: per_day[d])  # the quietest day first (the sort keeps date order between equal days)
+            for day in days:
                 for minutes in range(DAY_START_H * 60, DAY_END_H * 60 + 1, 30):
                     start = datetime.combine(day, time(0, 0), tzinfo=LONDON).astimezone(timezone.utc) + timedelta(minutes=minutes)
                     if not tier_problem(i, start, start + length, tier):
@@ -1437,7 +1440,7 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
         if blocked(i):
             result(i, "skipped", reason="no slot was found for the Apply block, so practice was not booked")
         else:
-            result(i, "failed", reason="your calendar has no free time in the next 30 days that keeps clear of your events")
+            result(i, "failed", reason="no free time in the next 30 days that keeps clear of your events and stays within three blocks a day")
     return [out[i] for i in sorted(out)]
 
 
