@@ -106,6 +106,11 @@ def login(body: LoginIn):
     user = db.get_user_by_email(body.email.strip().lower())
     if not user or not security.check_password(body.password, user["password_hash"]):
         raise HTTPException(401, "Wrong email or password")
+    if security.needs_rehash(user["password_hash"]):  # an older, slower hash: store it again at the quicker setting so the next login is fast
+        try:
+            db.set_password_hash(user["id"], security.hash_password(body.password))
+        except Exception:
+            pass
     return {"access_token": security.make_session(user["id"]), "token_type": "bearer"}
 
 
@@ -124,7 +129,11 @@ class ProfileIn(_Checked):
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 def health():
-    """For an uptime pinger: answers instantly and touches nothing, so it keeps a sleeping free server awake."""
+    """For an uptime pinger: keeps the free server awake, and one tiny query keeps the free database awake too."""
+    try:
+        db.ping()
+    except Exception:
+        pass
     return {"ok": True}
 
 

@@ -295,6 +295,17 @@ def create_user(email: str, password_hash: str) -> int:
         return c.execute("INSERT INTO users(email, password_hash) VALUES (?, ?)", (email, password_hash)).lastrowid
 
 
+def set_password_hash(user_id: int, password_hash: str) -> None:
+    with conn() as c:
+        c.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id))
+
+
+def ping() -> None:
+    """One cheap query, so a sleeping free database wakes up before the student needs it."""
+    with conn() as c:
+        c.execute("SELECT 1").fetchone()
+
+
 def get_user_by_email(email: str):
     with conn() as c:
         return c.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()

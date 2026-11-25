@@ -12,8 +12,18 @@ _fernet = Fernet(config.TOKEN_ENC_KEY.encode())
 SESSION_SECONDS = 7 * 24 * 3600
 
 
+BCRYPT_ROUNDS = 10  # still a strong setting, and about four times quicker than the default 12 on the small free server
+
+
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(BCRYPT_ROUNDS)).decode()
+
+
+def needs_rehash(password_hash: str) -> bool:
+    try:
+        return int(password_hash.split("$")[2]) > BCRYPT_ROUNDS
+    except Exception:
+        return False
 
 
 def check_password(password: str, password_hash: str) -> bool:
