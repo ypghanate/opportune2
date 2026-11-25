@@ -314,8 +314,27 @@ async def _call(user_id: int, name: str, args: dict):
 
 
 async def plan(user_id: int, items: list[dict]) -> list[dict]:
-    """plan_application: books each company's apply block and its practice sessions. One dict per block."""
-    return extract_items(await _call(user_id, "plan_application", {"items": items}))
+    """plan_application: books each company's apply block and its practice sessions. One dict per block.
+    Runs inside this process (starting a separate tool program for each plan cost many seconds on the small free server)."""
+    t0 = time.time()
+    log.info("[plan] user %s: planning %d opportunities", user_id, len(items))
+    import server as tools
+    loop = asyncio.get_running_loop()
+    try:
+        token_json = await loop.run_in_executor(None, google_oauth.fresh_token_json, user_id)
+    except Exception:
+        raise RuntimeError("Google access expired or was removed. Reconnect Google on your Profile page")
+    if not token_json:
+        raise RuntimeError("Connect your Google account on your Profile page first")
+    log.info("[plan] Google token ready (%.1fs)", time.time() - t0)
+    t1, t2 = progress.USER.set(user_id), tools.TOKEN.set(token_json)
+    try:
+        out = await tools.plan_application(items)
+    finally:
+        progress.USER.reset(t1)
+        tools.TOKEN.reset(t2)
+    log.info("[plan] finished (%.1fs in total)", time.time() - t0)
+    return out
 
 
 async def change_stage(user_id: int, args: dict) -> dict:

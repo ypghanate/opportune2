@@ -25,6 +25,7 @@ from tavily import TavilyClient
 
 import progress
 
+TOKEN: contextvars.ContextVar = contextvars.ContextVar("google_token", default=None)  # the student's Google token when a tool runs inside the web app
 KNOWN: contextvars.ContextVar = contextvars.ContextVar("known_opps", default=None)  # set when the search runs inside the web app
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,7 @@ async def ask(messages: list[dict], schema: type[BaseModel], model: str | None =
 # Google auth (single shared helper)
 # ---------------------------------------------------------------------------
 def get_credentials() -> Credentials:
-    token_json = os.environ.get("GOOGLE_TOKEN_JSON")
+    token_json = TOKEN.get() or os.environ.get("GOOGLE_TOKEN_JSON")
     if token_json:  # per-user token injected by the FastAPI backend for this run
         creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
         if not creds.valid and creds.refresh_token:
@@ -1275,8 +1276,10 @@ def _summary_of(item: dict) -> str:
 async def _schedule_blocks(items: list[dict]) -> list[dict]:
     """Finds a slot for every block (see _find_slots), then puts all the new events into Google Calendar in one batch request."""
     queued: list = []
+    t0 = time_module.monotonic()
     results = await _find_slots(items, queued)
     await _flush_inserts(queued, results)
+    print(f"[plan] {len(queued)} events written to Google Calendar, all done ({time_module.monotonic() - t0:.1f}s in total)", file=sys.stderr)
     return results
 
 
@@ -1343,9 +1346,14 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
     if not todo:
         return [out[i] for i in sorted(out)]
 
-    service = get_calendar_service()
+    t_plan = time_module.monotonic()
+    tick = lambda text: print(f"[plan] {text} ({time_module.monotonic() - t_plan:.1f}s)", file=sys.stderr)
+    tick(f"{len(todo)} blocks to place; connecting to Google Calendar")
+    service = await asyncio.to_thread(get_calendar_service)  # in worker threads: these calls would otherwise freeze the web app
+    tick("connected")
     horizon = min(max(d for _, d in todo), now + timedelta(days=30)) + timedelta(days=2)
-    existing = _all_events(service, now, horizon)
+    existing = await asyncio.to_thread(_all_events, service, now, horizon)
+    tick(f"read {len(existing)} calendar events")
 
     def _range(e):
         s, en = e['start'], e['end']
@@ -1515,6 +1523,7 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
                              for s0, e0, _, t in important],
     }, indent=2)
 
+    tick("calendar analysed; asking the scheduler model" if SCHEDULER_ATTEMPTS else "calendar analysed; placing blocks with the code rules")
     # Eval loop: the model proposes, the code checks every rule, and what failed goes back to the model with the reason.
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     max_attempts = SCHEDULER_ATTEMPTS
@@ -1558,6 +1567,7 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
                   "so avoid overlapping them too and respect every hard rule."
             )})
 
+    tick(f"model step finished, {len(pending)} blocks still to place")
     # Last resort, in code. A block is never left unbooked just because the calendar is busy: the soft limits give way one at a time,
     # and the hard rules (no clashes, 15 minutes around events, 24 hours before an exam or interview, 08:00 to 22:00, within 30 days) never do.
     #   tier 0: all rules      tier 1: three blocks a day instead of two (never more)      tier 2: practice may go beyond its ten-day window
@@ -1603,6 +1613,7 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
         if found:
             book_event(i, found[0], found[1], TIER_NOTE[found[2]])
 
+    tick("all slots chosen")
     for i in sorted(pending):
         if blocked(i):
             result(i, "skipped", reason="no slot was found for the Apply block, so practice was not booked")

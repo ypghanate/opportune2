@@ -9,6 +9,7 @@ decides what to do. If it fails, or is switched off (PLANNER=0), the fixed steps
   watch_openings        a programme was not open yet: read its page, and when it opens book the application
 Everything it does is written to the agent log, so the student can see what happened and why.
 """
+import time
 import asyncio
 import json
 import re
@@ -77,7 +78,9 @@ def _new_blocks(results: list[dict], application_id: int | None = None) -> list[
 async def plan_opportunities(user_id: int, rows: list[dict]) -> tuple[list[dict], list[int], list[dict]]:
     """Starts an application for each opportunity row and books its Apply block and practice sessions.
     Returns (block results, ids of the opportunities that got an Apply block, the applications)."""
+    t0 = time.time()
     apps = db.create_applications(user_id, rows)
+    log.info("[plan] applications saved (%.1fs)", time.time() - t0)
     # One application per row, in the same order. An application that already existed (same company, from an earlier round)
     # still points at its old opportunity id, so each is matched to its row here and given that row's id.
     apps = [{**a, "opportunity_id": r["id"]} for r, a in zip(rows, apps)]
