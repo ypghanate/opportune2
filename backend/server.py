@@ -194,7 +194,26 @@ def get_gmail_service():
 # ---------------------------------------------------------------------------
 # CV parsing
 # ---------------------------------------------------------------------------
+_CV_CACHE: dict = {}
+
+
 async def cv_to_text(cv_file: str) -> dict:
+    """Reads the CV in a worker thread (a large PDF used to freeze the whole web app for seconds) and remembers it until the file changes."""
+    path = os.path.expanduser(str(cv_file))
+    try:
+        stamp = (path, os.path.getmtime(path))
+    except OSError:
+        stamp = None
+    if stamp and stamp in _CV_CACHE:
+        return _CV_CACHE[stamp]
+    out = await asyncio.to_thread(_cv_to_text_sync, cv_file)
+    if stamp:
+        _CV_CACHE.clear()
+        _CV_CACHE[stamp] = out
+    return out
+
+
+def _cv_to_text_sync(cv_file: str) -> dict:
     path = os.path.expanduser(str(cv_file))
     root = os.environ.get("CV_ROOT")
     if root and Path(root).resolve() not in Path(path).resolve().parents:
@@ -729,12 +748,14 @@ async def search_opportunities(
     """Searches the web widely for spring weeks, internships and other opportunities, one company programme per result,
     then keeps the ones that fit the student. types: the 'Types of opportunity wanted' from the message,
     e.g. ["spring week", "internship"]. Leave max_results at its default (the best 8 are returned)."""
+    t_in = time_module.monotonic()
     try:
         cv_object = await cv_to_text(cv_file_path)
     except Exception as e:
         return [{"error": f"Could not read CV: {e}"}]
 
     began = time_module.monotonic()
+    print(f"[search] CV read, starting ({time_module.monotonic() - t_in:.1f}s since the call began)", file=sys.stderr)
 
     trail: list[str] = []  # a short plain-English account of what was cut, handed back when the list is thin
 

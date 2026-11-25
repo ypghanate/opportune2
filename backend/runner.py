@@ -272,6 +272,7 @@ async def search(user_id: int, profile: dict, cv_path: str, query: str, categori
             "query": query or "Find spring weeks and internships for me.",
             "types": [TYPE_WORDS.get(c, c.replace("_", " ")) for c in categories],
         }
+        log.info("[search] user %s: starting", user_id)
         import server as tools  # runs in this process: no new program to start for each search, which took many seconds on the small free server
 
         progress.write_for(user_id, "search", {"stage": "Reading your request", "items": [], "notes": [f"Reading your request: \"{args['query'][:120]}\""], "queries": [], "employers": [], "done": False})
