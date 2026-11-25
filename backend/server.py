@@ -44,7 +44,7 @@ tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 llm = AsyncAnthropic()  # reads ANTHROPIC_API_KEY
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")  # search, extraction, scheduling
 FAST_MODEL = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-5-5")  # per-email classification
-RANK_MODEL = os.environ.get("RANK_MODEL", FAST_MODEL)  # scores each programme for relevance; the fast model keeps the search quick
+RANK_MODEL = os.environ.get("RANK_MODEL", MODEL)  # scores each programme for relevance: this is where quality is decided, so the stronger model. Set RANK_MODEL to the fast model to trade quality for speed
 SCHEDULER_MODEL = os.environ.get("SCHEDULER_MODEL", FAST_MODEL)  # picks the calendar slots; the code checks every rule, so the fast model is enough
 SCHEDULER_ATTEMPTS = int(os.environ.get("SCHEDULER_ATTEMPTS", "1"))  # model tries before the code finds the slot itself
 SCHEDULER_TIMEOUT = float(os.environ.get("SCHEDULER_TIMEOUT", "12"))  # seconds the model gets for one try
@@ -315,9 +315,9 @@ async def _tavily_search(search_query: str, max_results: int = 10) -> list[dict]
 
 
 class SearchPlan(BaseModel):
-    queries: list[str] = Field(description="8 to 10 different web search queries, each short (3 to 10 words)")
+    queries: list[str] = Field(description="10 to 12 different web search queries, each short (3 to 10 words)")
     student_country: str = Field(default="United Kingdom", description="The country the student's location is in, e.g. 'United Kingdom'")
-    employers: list[str] = Field(default=[], description="18 to 22 real employers (company names only) known to run the wanted kind of programme for this student's stage, spread over their interests")
+    employers: list[str] = Field(default=[], description="25 to 30 real employers (company names only) known to run the wanted kind of programme for this student's stage, spread over their interests")
 
 
 class Candidate(BaseModel):
@@ -363,7 +363,7 @@ class Scores(BaseModel):
     scores: list[Score]
 
 
-SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "60"))  # seconds for the whole search; each stage adapts to what is left
+SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "70"))  # seconds for the whole search; each stage adapts to what is left
 SEARCH_CONCURRENCY = 8  # Tavily searches at once
 EXTRACT_BATCH = 10  # search results read per model call
 MAX_SHOWN = 8  # most opportunities returned, best first
@@ -463,7 +463,7 @@ Rules:
 - company is always the employer, never the website (not Bright Network, Gradcracker, RateMyPlacement, LinkedIn, Indeed...).
 - Skip graduate (full-time) jobs, programmes that have clearly closed, and anything for school pupils.
 - Always fill programme_year. Pages about earlier years (2022, 2023, 2024...) are old: still report their programme_year honestly, and never present an old programme as current.
-- Always fill field with the programme's area of work (its division or stream if the page names one), not just the industry of the company.
+- Always fill field with the programme's area of work (its division or stream if the page names one), not just the industry of the company. Take it ONLY from what the page says about this programme. If the page does not say which area it is in, write 'general (area not stated)'. Never guess the area from the employer's reputation.
 - Fill country, restricted_to and universities_allowed from what the page says about where it is and who may apply.
 - Always fill open_to from what the page says about who can apply (year of study, level). Leave it empty only if the page really does not say.
 - Only state dates the text actually gives. Never invent a deadline.
@@ -556,7 +556,7 @@ def _one_per_company(entries: list[dict]) -> list[dict]:
 
 async def _rank(entries: list[dict], profile_text: str, seconds: float = 12) -> dict[int, Score]:
     compact = [{"index": n, "company": e["company"], "title": e["title"], "field": e.get("field", ""), "type": e["type"],
-                "location": e["location"], "open_to": e.get("open_to")} for n, e in enumerate(entries)]
+                "location": e["location"], "open_to": e.get("open_to"), "page": (e.get("_snippet") or "")[:240]} for n, e in enumerate(entries)]
     system = f"""You decide which opportunities are relevant to this student, and how well.
 {profile_text}
 
@@ -572,7 +572,8 @@ Step 2. For every programme, set match by comparing the programme's field (and i
 - none: a different field, even from a famous employer. For a quant student, quant trading, quant research, quant development, systematic or algorithmic trading, market making and risk or pricing quant roles are strong; software engineering or data science at a trading firm is partial; investment banking, general markets, consulting, audit, law and generic graduate programmes are none. For a software engineering student, investment banking, markets, trading, consulting, audit, law and similar programmes with no engineering stream are none. For a finance student, pure software roles are none.
 
 Step 3. Give a score from 0 to 10 for how good a fit it is overall (field first, then kind of programme, location, and how well-known it is). Make scores differ so the order is meaningful. Inside the target fields, add up to 2 points when the CV clearly supports the programme.
-Every programme listed is already open to the student's year of study, so do not mark them down for that. Be strict about match: when in doubt between partial and none, ask whether the student would be glad to see it. Give a one-sentence reason that names the field."""
+Every programme listed is already open to the student's year of study, so do not mark them down for that. Be strict about match: when in doubt between partial and none, ask whether the student would be glad to see it.
+Judge by the programme's OWN field, title and page text, never by the employer's reputation or size. A famous employer is not evidence. If the field is general or not stated and the title and page say nothing about a target field (for example a generic 'Spring Insight' or 'Spring Week' at a bank or an advisory firm), match is none. Only give strong when the field, title or page text names the target area itself (for a quant student: quantitative research, quant development, quant trading, strats, systematic trading). A bank's general markets, banking or advisory programme is none for a quant or software student, whatever the bank is famous for. Give a one-sentence reason that names the field."""
     scores = {}
 
     async def part(chunk):
@@ -804,7 +805,7 @@ CV excerpt: {cv_object['text'][:1200]}"""
 Today is {now:%d %B %Y}.
 {profile_text}
 
-Write 8 to 10 different queries for the current application cycle (programmes running in {now.year + 1}).
+Write 10 to 12 different queries for the current application cycle (programmes running in {now.year + 1}).
 Only target programmes the student can actually attend and apply to from their location; do not search other countries unless they are online or the search request asks for them.
 Tailor every query to THIS student's stage, wording it the way employers do for them (e.g. "first year spring week", "insight programme first year undergraduate", "penultimate year summer internship", "final year" ...). Never write queries for stages they are not in, and never for PhDs, masters or graduate schemes unless that is their stage.
 The student gave three things: a search request (their words just now), their interests, and their CV. Use them like this.
@@ -819,7 +820,7 @@ Do not repeat yourself; each query should find different programmes.
 
 RELEVANCE IS STRICT. Work out the student's target fields: the search request if it names a field, sector, company or city; otherwise their interests; if neither is given, their degree and CV. Every query and every employer must serve those fields. For example, for a student interested in software engineering write queries such as "software engineering spring insight 2027" and list technology companies and the technology divisions of banks, and do NOT write finance, banking, consulting or trading queries or employers. For a quant or finance student, do the opposite.
 
-Also list 18 to 22 real employers, names only, that run the wanted programme types for a student at this stage (only employers whose programmes are in the TARGET FIELDS above, for example trading firms, market makers and quant hedge funds for a quant student; do not pad the list with banks, consultancies, law firms or tech companies that run nothing in those fields), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
+Also list 25 to 30 real employers, names only, that run the wanted programme types for a student at this stage (only employers whose programmes are in the TARGET FIELDS above, for example trading firms, market makers and quant hedge funds for a quant student; do not pad the list with banks, consultancies, law firms or tech companies that run nothing in those fields), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
     # Start searching at once with the obvious queries while the model works out the cleverer ones
     year = now.year + 1
     basic = [f"{t} {year} {location}" for t in types]
@@ -833,8 +834,8 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
     try:
         plan = await asyncio.wait_for(ask([{"role": "system", "content": plan_system},
                                            {"role": "user", "content": query or "Find opportunities for me"}], SearchPlan, model=FAST_MODEL), 10)
-        queries = [q.strip() for q in plan.queries if q.strip()][:10]
-        employers = list(dict.fromkeys(e.strip() for e in plan.employers if e.strip()))[:22]
+        queries = [q.strip() for q in plan.queries if q.strip()][:12]
+        employers = list(dict.fromkeys(e.strip() for e in plan.employers if e.strip()))[:30]
         student_country = plan.student_country or student_country
     except Exception as e:
         print(f"[search] planning failed, using simple queries: {e}", file=sys.stderr)
@@ -853,9 +854,9 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
     stage_word = STAGE_WORDS.get(next(iter(stage_ok - {"any_undergraduate"}), ""), "")
     stubs = [Candidate(index=0, company=n, title="", type=wanted, page_is_this_company_only=False, location="Unknown") for n in employers]
     print(f"[search] {len(stubs)} employers to look up directly", file=sys.stderr)
-    employer_job = asyncio.ensure_future(_resolve_many(stubs, context, now.year + 1, stage_word, " or ".join(types), min(30, max(left(24), 8)))) if stubs else None
+    employer_job = asyncio.ensure_future(_resolve_many(stubs, context, now.year + 1, stage_word, " or ".join(types), min(34, max(left(30), 8)))) if stubs else None
 
-    more = await _search_many(queries, per_query=10, seconds=min(14, max(left(36), 6))) if queries else []
+    more = await _search_many(queries, per_query=10, seconds=min(14, max(left(40), 6))) if queries else []
     try:
         first = await asyncio.wait_for(asyncio.shield(basic_job), 3)
     except Exception:
@@ -869,7 +870,7 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
     say("Pulling out each company's programme", 2)
 
     # 2. One entry per company programme
-    found = await _extract(results, context, seconds=min(16, max(left(22), 6))) if results else []
+    found = await _extract(results, context, seconds=min(18, max(left(26), 6))) if results else []
     lap(f"{len(found)} company programmes mentioned")
 
     # 3. Companies only seen on list pages: look up each one's own page, all together
@@ -987,7 +988,7 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
 
     # 5. Narrow down to what fits the student and their search
     say(f"Found {len(entries)} programmes. Picking the ones that fit you", 3)
-    scores = await _rank(entries, profile_text, seconds=min(14, max(left(16), 6)))
+    scores = await _rank(entries, profile_text, seconds=min(18, max(left(18), 8)))
     for n, e in enumerate(entries):
         s = scores.get(n)
         e["score"], e["why"] = (s.score, s.reason) if s else (3, "")
@@ -1037,7 +1038,7 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
             row.update(state="watching" if watching else "open", watch=watching, open=e.get("open_status") == "open")
         say("Checking which are open for applications")
 
-    await _check_open(pool, now, min(18, max(left(4), 4)), on_item=preview)
+    await _check_open(pool, now, min(20, max(left(4), 4)), on_item=preview)
     usable, upcoming = [], []
     for e in pool:
         status = e.get("open_status", "unknown")
