@@ -69,7 +69,7 @@ export default function Find() {
           ) : (
             <>
               <h2 className="results-h">{run.items.length} {run.items.length === 1 ? "opportunity" : "opportunities"} found</h2>
-              <ResultsPanel items={run.items} onApproved={approved} />
+              <ResultsPanel items={run.items} onApproved={approved} grouped />
             </>
           )}
         </section>

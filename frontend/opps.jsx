@@ -8,7 +8,7 @@ const fmtDate = (s) => {
 const label = (c) => (c || "").replace(/_/g, " ");
 
 // Shared by Find and My opportunities: a list with checkboxes and an Approve button.
-export function ResultsPanel({ items, onApproved }) {
+export function ResultsPanel({ items, onApproved, grouped = false }) {
   const [sel, setSel] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -40,6 +40,13 @@ export function ResultsPanel({ items, onApproved }) {
     }
   }
 
+  const watching = items.filter((i) => i.status === "watching");
+  const open = items.filter((i) => i.status !== "watching");
+  const groups = !grouped ? [{ key: "all", list: items }] : [
+    watching.length > 0 && { key: "watch", title: "Watching out", hint: "Not open yet. The agent checks these and books your application when they open.", list: watching },
+    open.length > 0 && { key: "open", title: "Found and open", hint: "Open now, with a deadline.", list: open },
+  ].filter(Boolean);
+
   return (
     <div>
       {pending.length > 0 && (
@@ -54,25 +61,31 @@ export function ResultsPanel({ items, onApproved }) {
         </div>
       )}
       {msg && <p className={`notice ${msg.ok ? "" : "notice-err"}`} role={msg.ok ? "status" : "alert"}>{msg.text} {msg.link && <a className="link" href="#/applications">See your applications</a>}</p>}
-      <ul className="opp-list">
-        {items.map((o) => (
-          <li key={o.id} className="tile opp-row">
-            {o.status === "pending" ? (
-              <input type="checkbox" className="opp-check" checked={sel.has(o.id)} onChange={() => toggle(o.id)} aria-label={`Select ${o.title}`} />
-            ) : <span className="opp-check" />}
-            <div className="opp-main">
-              <span className="opp-title">{o.title}</span>
-              <p>{[o.company, label(o.category), o.location].filter(Boolean).join(" · ")}</p>
-              {o.description && <p className="opp-desc">{o.description}</p>}
-              {o.url && <a className="opp-link" href={o.url} target="_blank" rel="noopener noreferrer">View original listing ↗</a>}
-            </div>
-            <div className="opp-side">
-              {o.status === "watching" ? <span className="deadline">Not open yet<small>watching</small></span> : <span className="deadline">{fmtDate(o.deadline)}<small>deadline</small></span>}
-              <span className={`tag ${o.status === "approved" ? "tag-ok" : ""}`} title={o.status === "watching" ? "The agent checks the page and books your application when it opens" : undefined}>{o.status}</span>
-            </div>
-          </li>
-        ))}
-      </ul>
+      {groups.map((g) => (
+        <section key={g.key} className="opp-group">
+          {g.title && <h3 className="group-h">{g.title} <span className="group-n">{g.list.length}</span></h3>}
+          {g.hint && <p className="group-hint">{g.hint}</p>}
+          <ul className="opp-list">
+            {g.list.map((o) => (
+              <li key={o.id} className="tile opp-row">
+                {o.status === "pending" ? (
+                  <input type="checkbox" className="opp-check" checked={sel.has(o.id)} onChange={() => toggle(o.id)} aria-label={`Select ${o.title}`} />
+                ) : <span className="opp-check" />}
+                <div className="opp-main">
+                  <span className="opp-title">{o.title}</span>
+                  <p>{[o.company, label(o.category), o.location].filter(Boolean).join(" · ")}</p>
+                  {o.description && <p className="opp-desc">{o.description}</p>}
+                  {o.url && <a className="opp-link" href={o.url} target="_blank" rel="noopener noreferrer">View original listing ↗</a>}
+                </div>
+                <div className="opp-side">
+                  {o.status === "watching" ? <span className="deadline">Not open yet<small>watching</small></span> : <span className="deadline">{fmtDate(o.deadline)}<small>deadline</small></span>}
+                  <span className={`tag ${o.status === "approved" ? "tag-ok" : ""}`} title={o.status === "watching" ? "The agent checks the page and books your application when it opens" : undefined}>{o.status}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
     </div>
   );
 }

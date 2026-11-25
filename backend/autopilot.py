@@ -78,6 +78,9 @@ async def plan_opportunities(user_id: int, rows: list[dict]) -> tuple[list[dict]
     """Starts an application for each opportunity row and books its Apply block and practice sessions.
     Returns (block results, ids of the opportunities that got an Apply block, the applications)."""
     apps = db.create_applications(user_id, rows)
+    # One application per row, in the same order. An application that already existed (same company, from an earlier round)
+    # still points at its old opportunity id, so each is matched to its row here and given that row's id.
+    apps = [{**a, "opportunity_id": r["id"]} for r, a in zip(rows, apps)]
     app_of = {a["opportunity_id"]: a for a in apps}
     items = [{**json.loads(r["data"]), "company": app_of[r["id"]]["company"], "application_id": app_of[r["id"]]["id"],
               "colour_id": app_of[r["id"]]["colour_id"]} for r in rows]
