@@ -10,17 +10,17 @@ export default function Find() {
   const [cats, setCats] = useState(["internship", "spring_week"]);
   const [run, setRun] = useState({ phase: "idle" });
 
-  const [live, setLive] = useState({ stage: "", items: [] });
+  const [live, setLive] = useState({ stage: "", items: [], notes: [], queries: [], employers: [] });
 
   // While the search runs, ask the server what it has found so far.
   useEffect(() => {
     if (run.phase !== "running") return;
     let stop = false;
-    setLive({ stage: "Starting your search", items: [] });
+    setLive({ stage: "Starting your search", items: [], notes: [], queries: [], employers: [] });
     const t = setInterval(async () => {
       try {
         const p = await api.progress("search");
-        if (!stop && p && (p.stage || p.items)) setLive({ stage: p.stage || "", items: p.items || [] });
+        if (!stop && p && (p.stage || p.items)) setLive({ stage: p.stage || "", items: p.items || [], notes: p.notes || [], queries: p.queries || [], employers: p.employers || [] });
       } catch { /* keep waiting */ }
     }, 500);
     return () => { stop = true; clearInterval(t); };
@@ -77,13 +77,31 @@ export default function Find() {
       {run.phase === "running" && (
         <>
           <p className="notice" role="status"><span className="spinner" aria-hidden="true" /> {live.stage || "The agent is searching and checking listings."}</p>
+          {(live.notes.length > 0 || live.queries.length > 0) && (
+            <section className="thinking" aria-live="polite">
+              <h2 className="results-h">What the agent is doing</h2>
+              <ol className="think-steps">
+                {live.notes.map((n, i) => <li key={i} className={i === live.notes.length - 1 ? "think-now" : ""}>{n}</li>)}
+              </ol>
+              {live.queries.length > 0 && (
+                <div className="think-block"><small>Searching for</small>
+                  <div className="think-chips">{live.queries.map((q) => <span key={q} className="think-chip">{q}</span>)}</div>
+                </div>
+              )}
+              {live.employers.length > 0 && (
+                <div className="think-block"><small>Looking up directly</small>
+                  <div className="think-chips">{live.employers.map((q) => <span key={q} className="think-chip">{q}</span>)}</div>
+                </div>
+              )}
+            </section>
+          )}
           {live.items.length > 0 && (
             <section className="live-found" aria-live="polite">
               <h2 className="results-h">Found so far, being checked</h2>
               {live.items.map((o, i) => (
                 <div key={`${o.company}-${i}`} className="live-row">
                   <div><strong>{o.title}</strong><small>{[o.company, o.location].filter(Boolean).join(" · ")}</small></div>
-                  <span className={`live-tag ${o.state === "checking" || o.state === "ranking" ? "live-checking" : ""}`}>{o.state === "ranking" ? "Ranking…" : o.state === "checking" ? "Checking…" : o.watch ? "Watching out: not open yet" : o.open ? "Open now" : "Open, check the page"}</span>
+                  <span className={`live-tag ${o.state !== "open" && o.state !== "watching" ? "live-checking" : ""}`}>{o.state === "considering" ? "Considering…" : o.state === "ranking" ? "Ranking…" : o.state === "checking" ? "Checking…" : o.watch ? "Watching out: not open yet" : o.open ? "Open now" : "Open, check the page"}</span>
                 </div>
               ))}
             </section>

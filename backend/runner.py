@@ -272,9 +272,16 @@ async def search(user_id: int, profile: dict, cv_path: str, query: str, categori
             "query": query or "Find spring weeks and internships for me.",
             "types": [TYPE_WORDS.get(c, c.replace("_", " ")) for c in categories],
         }
-        async with _mcp_tools(user_id) as all_tools:
-            tool = next(t for t in all_tools if t.name == "search_opportunities")
-            found = extract_items(await asyncio.wait_for(tool.ainvoke(args), SEARCH_TIMEOUT))
+        import server as tools  # runs in this process: no new program to start for each search, which took many seconds on the small free server
+
+        progress.write_for(user_id, "search", {"stage": "Reading your request", "items": [], "notes": [f"Reading your request: \"{args['query'][:120]}\""], "queries": [], "employers": [], "done": False})
+        known = [r["key"] for r in db.get_opportunities(user_id) if r["key"].startswith("web|")]
+        t1, t2 = progress.USER.set(user_id), tools.KNOWN.set(known)
+        try:
+            found = await asyncio.wait_for(tools.search_opportunities(**args), SEARCH_TIMEOUT)
+        finally:
+            progress.USER.reset(t1)
+            tools.KNOWN.reset(t2)
         diag = next((f["diag"] for f in found if f.get("diag")), "")
         errors = [f["error"] for f in found if f.get("error")]
         items = [f for f in found if f.get("title") and not f.get("error") and (f.get("deadline") or f.get("watch"))]

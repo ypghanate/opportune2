@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextvars
 import json
 import os
 import re
@@ -23,6 +24,8 @@ from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
 import progress
+
+KNOWN: contextvars.ContextVar = contextvars.ContextVar("known_opps", default=None)  # set when the search runs inside the web app
 
 # ---------------------------------------------------------------------------
 # Config
@@ -292,9 +295,9 @@ async def _tavily_search(search_query: str, max_results: int = 10) -> list[dict]
 
 
 class SearchPlan(BaseModel):
-    queries: list[str] = Field(description="10 to 12 different web search queries, each short (3 to 10 words)")
+    queries: list[str] = Field(description="8 to 10 different web search queries, each short (3 to 10 words)")
     student_country: str = Field(default="United Kingdom", description="The country the student's location is in, e.g. 'United Kingdom'")
-    employers: list[str] = Field(default=[], description="25 to 30 real employers (company names only) known to run the wanted kind of programme for this student's stage, spread over their interests")
+    employers: list[str] = Field(default=[], description="18 to 22 real employers (company names only) known to run the wanted kind of programme for this student's stage, spread over their interests")
 
 
 class Candidate(BaseModel):
@@ -737,11 +740,18 @@ async def search_opportunities(
 
     shown: list[dict] = []  # opportunities confirmed so far, sent to the page while the search is still running
 
+    notes: list[str] = []  # the agent's thinking, in plain words, in order
+    looking: dict = {"queries": [], "employers": []}  # what it is searching for, exactly
+
     def say(stage):
-        progress.write("search", {"stage": stage, "items": shown, "done": False})
+        if stage and (not notes or notes[-1] != stage):
+            notes.append(stage)
+        progress.write("search", {"stage": stage, "items": shown, "notes": notes[-12:], "queries": looking["queries"],
+                                  "employers": looking["employers"], "done": False})
 
     def lap(text, keep=True):
         print(f"[search] {text} ({time_module.monotonic() - began:.0f}s)", file=sys.stderr)
+        say(text.split("  (dropped")[0].capitalize())
         if keep:
             trail.append(text.split("  (dropped")[0])
 
@@ -752,7 +762,7 @@ async def search_opportunities(
     grad = str(eligibility_info.get("graduation_year") or "")
     location = eligibility_info.get("location") or "United Kingdom"
     stage_text, stage_ok, stage_avoid = _student_stage(eligibility_info, now)
-    say("Searching the web for programmes")
+    say(f"Reading your request: \"{(query or 'find opportunities for me')[:120]}\". Working out what to search for")
     profile_text = f"""Student: {stage_text} ({eligibility_info.get('year_of_study') or 'year not given'}) studying {eligibility_info.get('degree') or 'an unknown degree'} at {eligibility_info.get('university') or 'an unknown university'}, graduating {grad or 'unknown'}, based in {location}.
 Interests: {interests or 'not given'}.
 Types wanted: {', '.join(types)}.
@@ -767,7 +777,7 @@ CV excerpt: {cv_object['text'][:1200]}"""
 Today is {now:%d %B %Y}.
 {profile_text}
 
-Write 10 to 12 different queries for the current application cycle (programmes running in {now.year + 1}).
+Write 8 to 10 different queries for the current application cycle (programmes running in {now.year + 1}).
 Only target programmes the student can actually attend and apply to from their location; do not search other countries unless they are online or the search request asks for them.
 Tailor every query to THIS student's stage, wording it the way employers do for them (e.g. "first year spring week", "insight programme first year undergraduate", "penultimate year summer internship", "final year" ...). Never write queries for stages they are not in, and never for PhDs, masters or graduate schemes unless that is their stage.
 The student gave three things: a search request (their words just now), their interests, and their CV. Use them like this.
@@ -782,12 +792,12 @@ Do not repeat yourself; each query should find different programmes.
 
 RELEVANCE IS STRICT. Work out the student's target fields: the search request if it names a field, sector, company or city; otherwise their interests; if neither is given, their degree and CV. Every query and every employer must serve those fields. For example, for a student interested in software engineering write queries such as "software engineering spring insight 2027" and list technology companies and the technology divisions of banks, and do NOT write finance, banking, consulting or trading queries or employers. For a quant or finance student, do the opposite.
 
-Also list 25 to 30 real employers, names only, that run the wanted programme types for a student at this stage (only employers whose programmes are in the TARGET FIELDS above, for example trading firms, market makers and quant hedge funds for a quant student; do not pad the list with banks, consultancies, law firms or tech companies that run nothing in those fields), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
+Also list 18 to 22 real employers, names only, that run the wanted programme types for a student at this stage (only employers whose programmes are in the TARGET FIELDS above, for example trading firms, market makers and quant hedge funds for a quant student; do not pad the list with banks, consultancies, law firms or tech companies that run nothing in those fields), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
     try:
         plan = await asyncio.wait_for(ask([{"role": "system", "content": plan_system},
                                            {"role": "user", "content": query or "Find opportunities for me"}], SearchPlan, model=FAST_MODEL), 10)
-        queries = [q.strip() for q in plan.queries if q.strip()][:12]
-        employers = list(dict.fromkeys(e.strip() for e in plan.employers if e.strip()))[:30]
+        queries = [q.strip() for q in plan.queries if q.strip()][:10]
+        employers = list(dict.fromkeys(e.strip() for e in plan.employers if e.strip()))[:22]
         student_country = plan.student_country or student_country
     except Exception as e:
         print(f"[search] planning failed, using simple queries: {e}", file=sys.stderr)
@@ -796,6 +806,10 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
         queries = [f"{t} {now.year + 1} {location}" for t in types] + [f"{i.strip()} {types[0]} {now.year + 1}" for i in interests.split(",")[:6]]
     for q in queries:
         print(f"[search] query: {q}", file=sys.stderr)
+    looking["queries"], looking["employers"] = queries, employers[:15]
+    for n in employers[:8]:  # the employers it is going to look at, shown at once
+        shown.append({"title": "Programme being looked up", "company": n, "location": None, "url": None, "state": "considering", "watch": False, "open": False})
+    say(f"Searching the web with {len(queries)} different searches" + (f" and looking up {len(employers)} employers directly" if employers else ""))
 
     wanted = types[0] if types[0] in Candidate.model_fields["type"].annotation.__args__ else "internship"
     stage_word = STAGE_WORDS.get(next(iter(stage_ok - {"any_undergraduate"}), ""), "")
@@ -840,7 +854,7 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     my_country = _country_key(student_country)
     my_uni = _norm(eligibility_info.get("university") or "")
     try:
-        known = set(json.loads(os.environ.get("KNOWN_OPPS", "[]")))  # programmes this student already has (any status)
+        known = set(KNOWN.get() if KNOWN.get() is not None else json.loads(os.environ.get("KNOWN_OPPS", "[]")))  # programmes this student already has (any status)
     except ValueError:
         known = set()
     entries, seen, dropped = [], set(), Counter()
@@ -918,6 +932,7 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
         trail.append("dropped: " + ", ".join(f"{n} {why}" for why, n in dropped.most_common(5)))
 
     # Show what has been found straight away, before the ranking finishes
+    shown.clear()
     for e in _one_per_company(entries)[:8]:
         shown.append({"title": e["title"], "company": e["company"], "location": e.get("location"), "url": e.get("url"), "state": "ranking", "watch": False, "open": False})
     say(f"Found {len(entries)} programmes. Picking the ones that fit you")
@@ -1012,6 +1027,21 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
                 e["fill"] = tag
                 usable.append(e)
         lap(f"too few close matches, added from the next best ({tag})")
+    # Last guarantee: if the time ran out or too many were dropped, add the best unchecked ones rather than show fewer than the minimum.
+    # They are marked as unconfirmed, and the student is told to check the page.
+    if len(usable) < MIN_WANTED:
+        usable = _one_per_company(usable)
+        have = {_same_firm(u["company"]) for u in usable + upcoming}
+        for tag, spares in (("loose", reserve), ("known", relevant_known), ("outside", ranked_out), ("known_other", other_known)):
+            for e in _one_per_company([x for x in spares if id(x) not in tried and _same_firm(x["company"]) not in have]):
+                if len(usable) >= MIN_WANTED:
+                    break
+                if e.get("deadline") and e.get("url"):
+                    e["fill"], e["open_status"] = tag, "unknown"
+                    usable.append(e)
+                    tried.add(id(e))
+                    have.add(_same_firm(e["company"]))
+        lap(f"{len(usable)} after adding the best unchecked ones to reach the minimum")
     # confirmed-open programmes first, then the ones we could not confirm
     FILL_ORDER = {None: 0, "loose": 1, "known": 2, "outside": 3, "known_other": 4}
     usable.sort(key=lambda e: (FILL_ORDER[e.get("fill")], e["match"] != "strong", e.get("open_status") != "open", -e["score"], e["deadline"]))
