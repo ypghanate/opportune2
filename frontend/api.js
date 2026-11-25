@@ -78,6 +78,7 @@ export const api = {
     return request("/api/profile/cv", { method: "POST", form });
   },
   search: (query, categories) => (markAgentRun(), request)("/api/opportunities/search", { method: "POST", json: { query, categories } }).then(changed),
+  progress: (kind) => request(`/api/progress/${kind}`),
   opportunities: () => request("/api/opportunities"),
   deleteAllOpportunities: () => request("/api/opportunities", { method: "DELETE" }).then(changed),
   calendar: (start, end) => request(`/api/calendar?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`),

@@ -26,6 +26,7 @@ import db
 import google_oauth
 import rules
 import uk_data
+import progress
 import runner
 import security
 from security import current_user
@@ -293,6 +294,14 @@ def delete_all_opportunities(user=Depends(current_user)):
     return {"deleted": db.delete_opportunities(user["id"])}
 
 
+@app.get("/api/progress/{kind}")
+def live_progress(kind: str, user=Depends(current_user)):
+    """What the search or the planner has done so far, for the page to show while it waits."""
+    if kind not in ("search", "plan"):
+        raise HTTPException(404, "Unknown progress")
+    return progress.read(user["id"], kind)
+
+
 @app.post("/api/opportunities/approve")
 async def approve(ids: list[int], user=Depends(current_user)):
     """Approving an opportunity starts an application: its apply block and, until an online assessment arrives, practice sessions."""
@@ -301,6 +310,7 @@ async def approve(ids: list[int], user=Depends(current_user)):
         raise HTTPException(400, "Nothing to approve")
     if len(rows) > 25:
         raise HTTPException(400, "Approve at most 25 at a time")
+    progress.clear(user["id"], "plan")
     try:
         results, booked, _ = await autopilot.plan_opportunities(user["id"], rows)
     except Exception as e:

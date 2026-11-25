@@ -17,6 +17,7 @@ from langgraph.types import Command
 import config
 import db
 import google_oauth
+import progress
 from agent import build_graph, content_texts, extract_items
 
 log = logging.getLogger("uvicorn.error")  # shows up in the uvicorn terminal
@@ -208,7 +209,7 @@ async def _mcp_tools(user_id: int):
     # The tool server only gets what it needs, not our app secrets.
     env = {k: os.environ[k] for k in ("ANTHROPIC_API_KEY", "TAVILY_API_KEY", "CLAUDE_MODEL", "CLAUDE_FAST_MODEL") if k in os.environ}
     known = [r["key"] for r in db.get_opportunities(user_id) if r["key"].startswith("web|")]  # the search skips what you already have
-    env.update(KNOWN_OPPS=json.dumps(known), GOOGLE_TOKEN_JSON=token_json, CALENDAR_ID="primary", CV_ROOT=str(config.CV_ROOT),
+    env.update(PROGRESS_USER=str(user_id), PROGRESS_DIR=str(progress.DIR), KNOWN_OPPS=json.dumps(known), GOOGLE_TOKEN_JSON=token_json, CALENDAR_ID="primary", CV_ROOT=str(config.CV_ROOT),
                SHOT_ROOT=str(config.SHOT_ROOT))
     client = MultiServerMCPClient(
         {"opportunities": {"transport": "stdio", "command": sys.executable, "args": [str(SERVER)], "env": env}}
@@ -257,6 +258,7 @@ async def search(user_id: int, profile: dict, cv_path: str, query: str, categori
     run = Run(user_id)
     RUNS[run.id] = run
     db.create_run(run.id, user_id)
+    progress.clear(user_id, "search")
     try:
         eligibility = {
             "graduation_year": profile["graduation_year"], "location": profile["location"],

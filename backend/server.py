@@ -22,6 +22,8 @@ from anthropic import AsyncAnthropic, BadRequestError
 from pydantic import BaseModel, Field
 from tavily import TavilyClient
 
+import progress
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -38,6 +40,7 @@ tavily_client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
 llm = AsyncAnthropic()  # reads ANTHROPIC_API_KEY
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5-5")  # search, extraction, scheduling
 FAST_MODEL = os.environ.get("CLAUDE_FAST_MODEL", "claude-haiku-5-5")  # per-email classification
+RANK_MODEL = os.environ.get("RANK_MODEL", FAST_MODEL)  # scores each programme for relevance; the fast model keeps the search quick
 SCHEDULER_MODEL = os.environ.get("SCHEDULER_MODEL", FAST_MODEL)  # picks the calendar slots; the code checks every rule, so the fast model is enough
 SCHEDULER_ATTEMPTS = int(os.environ.get("SCHEDULER_ATTEMPTS", "1"))  # model tries before the code finds the slot itself
 SCHEDULER_TIMEOUT = float(os.environ.get("SCHEDULER_TIMEOUT", "12"))  # seconds the model gets for one try
@@ -528,7 +531,7 @@ Every programme listed is already open to the student's year of study, so do not
     async def part(chunk):
         try:
             out = await ask([{"role": "system", "content": system},
-                             {"role": "user", "content": json.dumps(chunk, ensure_ascii=False)}], Scores)
+                             {"role": "user", "content": json.dumps(chunk, ensure_ascii=False)}], Scores, model=RANK_MODEL)
             return out.scores
         except Exception as e:
             print(f"[search] ranking failed: {e}", file=sys.stderr)
@@ -632,13 +635,23 @@ async def _fetch_page(url: str) -> tuple[bool, str]:
         return True, ""
 
 
-async def _check_open(pool: list[dict], now: datetime, seconds: float) -> None:
+async def _check_open(pool: list[dict], now: datetime, seconds: float, on_item=None) -> None:
     """Reads each programme's own page and records whether applications have actually opened."""
     sem = asyncio.Semaphore(10)
 
     keep = ("alive", "open_status", "open_evidence", "for_year", "deadline", "deadline_assumed", "opens_on")
 
     async def one(e):
+        try:
+            await one_inner(e)
+        finally:
+            if on_item:
+                try:
+                    on_item(e)
+                except Exception:
+                    pass
+
+    async def one_inner(e):
         hit = _cached("open", e["url"], PAGE_CACHE_MIN)
         if hit:
             e.update(hit)
@@ -698,6 +711,11 @@ async def search_opportunities(
 
     trail: list[str] = []  # a short plain-English account of what was cut, handed back when the list is thin
 
+    shown: list[dict] = []  # opportunities confirmed so far, sent to the page while the search is still running
+
+    def say(stage):
+        progress.write("search", {"stage": stage, "items": shown, "done": False})
+
     def lap(text, keep=True):
         print(f"[search] {text} ({time_module.monotonic() - began:.0f}s)", file=sys.stderr)
         if keep:
@@ -710,6 +728,7 @@ async def search_opportunities(
     grad = str(eligibility_info.get("graduation_year") or "")
     location = eligibility_info.get("location") or "United Kingdom"
     stage_text, stage_ok, stage_avoid = _student_stage(eligibility_info, now)
+    say("Searching the web for programmes")
     profile_text = f"""Student: {stage_text} ({eligibility_info.get('year_of_study') or 'year not given'}) studying {eligibility_info.get('degree') or 'an unknown degree'} at {eligibility_info.get('university') or 'an unknown university'}, graduating {grad or 'unknown'}, based in {location}.
 Interests: {interests or 'not given'}.
 Types wanted: {', '.join(types)}.
@@ -875,6 +894,7 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
         trail.append("dropped: " + ", ".join(f"{n} {why}" for why, n in dropped.most_common(5)))
 
     # 5. Narrow down to what fits the student and their search
+    say(f"Found {len(entries)} programmes. Picking the ones that fit you")
     scores = await _rank(entries, profile_text, seconds=min(22, left(8)))
     for n, e in enumerate(entries):
         s = scores.get(n)
@@ -900,7 +920,19 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
 
     # 6. Read each programme's own page: is the link alive, and have applications actually opened?
     pool = entries[: max_results * 4]  # spares, since closed, not-yet-open and dead ones are dropped here
-    await _check_open(pool, now, min(24, max(left(6), 2)))
+    say("Checking which are open for applications")
+
+    def preview(e):  # one programme's page has just been read: show it now if it is a good one
+        if e.get("alive") is False or e.get("open_status") == "closed" or (e.get("for_year") and e["for_year"] < first_year):
+            return
+        watching = e.get("open_status") == "not_yet_open"
+        if len([x for x in shown if not x["watch"]]) >= max_results and not watching:
+            return
+        shown.append({"title": e["title"], "company": e["company"], "location": e.get("location"), "category": e.get("type") or e.get("category"),
+                      "url": e.get("url"), "deadline": None if watching else e.get("deadline"), "watch": watching, "open": e.get("open_status") == "open"})
+        say("Checking which are open for applications")
+
+    await _check_open(pool, now, min(24, max(left(6), 2)), on_item=preview)
     usable, upcoming = [], []
     for e in pool:
         status = e.get("open_status", "unknown")
@@ -1196,6 +1228,8 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
         return _utc(s.get('dateTime') or s.get('date')), _utc(en.get('dateTime') or en.get('date'))
 
     busy, important, already = [], [], {}
+    day_log: dict = {}  # UK date -> the events on it (kept as they are), then the blocks placed in this run: shown to the student as it plans
+    steps: list[dict] = []
     per_day = Counter()
     company_days = Counter()
     for e in existing:
@@ -1222,6 +1256,8 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
         if _is_free(e) and not is_important:
             continue  # only an all-day note that is not marked busy leaves the time free
         busy.append((start_e, end_e))
+        day_log.setdefault(start_e.astimezone(LONDON).date(), []).append(
+            {"title": title or "Busy", "start": start_e.astimezone(LONDON).isoformat(), "end": end_e.astimezone(LONDON).isoformat(), "new": False})
 
     owner_of = lambda i: _company_key(items[i].get("company") or items[i].get("title") or "") or f"item{i}"
     deadlines = dict(todo)
@@ -1255,6 +1291,13 @@ async def _find_slots(items: list[dict], queued: list) -> list[dict]:
         if it.get("resource_url"):  # Google Calendar shows this as a link on the event
             body["source"] = {"title": it.get("resource_label") or "Practice", "url": it["resource_url"]}
         queued.append((i, body, service))  # inserted together at the end, in one batch
+        day = start.astimezone(LONDON).date()
+        day_log.setdefault(day, []).append({"title": _summary_of(it), "start": start.astimezone(LONDON).isoformat(),
+                                            "end": end.astimezone(LONDON).isoformat(), "new": True})
+        steps.append({"company": str(it.get("company") or it.get("title") or ""), "kind": LABELS.get(kind, kind), "title": _summary_of(it),
+                      "day": day.isoformat(), "start": start.astimezone(LONDON).isoformat(), "end": end.astimezone(LONDON).isoformat(),
+                      "why": reason, "day_events": sorted(day_log[day], key=lambda x: x["start"])[:8]})
+        progress.write("plan", {"steps": steps, "done": False})
         busy.append((start, end))
         per_day[start.astimezone(LONDON).date()] += 1
         if kind == "apply":

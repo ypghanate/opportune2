@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
+import PlanLive from "./planlive.jsx";
 
 const fmtDate = (s) => {
   const d = new Date(s);
@@ -12,17 +13,44 @@ export function ResultsPanel({ items, onApproved, grouped = false }) {
   const [sel, setSel] = useState(new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [steps, setSteps] = useState([]);   // what the planner has decided so far (read from the server while it works)
+  const [shown, setShown] = useState(0);    // how many of those the student has been shown: they appear one at a time
+  const live = useRef({ n: 0, total: 0 });
+  live.current = { n: shown, total: steps.length };
   const pending = items.filter((i) => i.status === "pending");
   const allOn = pending.length > 0 && pending.every((i) => sel.has(i.id));
 
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
+  // While planning runs, ask the server what it has placed so far and reveal it one block at a time.
+  useEffect(() => {
+    if (!busy) return;
+    let stop = false;
+    const poll = async () => {
+      try {
+        const p = await api.progress("plan");
+        if (!stop && p?.steps) setSteps((old) => (p.steps.length >= old.length ? p.steps : old));
+      } catch { /* the page keeps waiting */ }
+    };
+    const a = setInterval(poll, 700);
+    const b = setInterval(() => setShown((n) => (n < live.current.total ? n + 1 : n)), 450);
+    return () => { stop = true; clearInterval(a); clearInterval(b); };
+  }, [busy]);
+
   async function approve() {
     setBusy(true);
     setMsg(null);
+    setSteps([]);
+    setShown(0);
     try {
       const ids = [...sel];
       const r = await api.approve(ids);
+      try {  // pick up the last decisions, then let the student see the rest of the plan before it closes
+        const p = await api.progress("plan");
+        if (p?.steps) setSteps(p.steps);
+        const end = Date.now() + 7000;
+        while (Date.now() < end && live.current.n < (p?.steps?.length || 0)) await new Promise((res) => setTimeout(res, 150));
+      } catch { /* not important */ }
       const booked = r?.booked ?? ids;
       onApproved(booked);
       setSel(new Set());
@@ -60,6 +88,7 @@ export function ResultsPanel({ items, onApproved, grouped = false }) {
           </button>
         </div>
       )}
+      {busy && <PlanLive steps={steps.slice(0, shown)} total={steps.length} />}
       {msg && <p className={`notice ${msg.ok ? "" : "notice-err"}`} role={msg.ok ? "status" : "alert"}>{msg.text} {msg.link && <a className="link" href="#/applications">See your applications</a>}</p>}
       {groups.map((g) => (
         <section key={g.key} className="opp-group">

@@ -10,6 +10,22 @@ export default function Find() {
   const [cats, setCats] = useState(["internship", "spring_week"]);
   const [run, setRun] = useState({ phase: "idle" });
 
+  const [live, setLive] = useState({ stage: "", items: [] });
+
+  // While the search runs, ask the server what it has found so far.
+  useEffect(() => {
+    if (run.phase !== "running") return;
+    let stop = false;
+    setLive({ stage: "Starting your search", items: [] });
+    const t = setInterval(async () => {
+      try {
+        const p = await api.progress("search");
+        if (!stop && p && (p.stage || p.items)) setLive({ stage: p.stage || "", items: p.items || [] });
+      } catch { /* keep waiting */ }
+    }, 1000);
+    return () => { stop = true; clearInterval(t); };
+  }, [run.phase]);
+
   useEffect(() => { api.getProfile().then(setProfile).catch(() => {}); }, []);
 
   const ready = !profile || (profile.name && profile.university);
@@ -59,7 +75,20 @@ export default function Find() {
       </form>
 
       {run.phase === "running" && (
-        <p className="notice" role="status"><span className="spinner" aria-hidden="true" /> The agent is searching and checking listings. This can take a minute or two.</p>
+        <>
+          <p className="notice" role="status"><span className="spinner" aria-hidden="true" /> {live.stage || "The agent is searching and checking listings."}</p>
+          {live.items.length > 0 && (
+            <section className="live-found" aria-live="polite">
+              <h2 className="results-h">Found so far</h2>
+              {live.items.map((o, i) => (
+                <div key={`${o.company}-${i}`} className="live-row">
+                  <div><strong>{o.title}</strong><small>{[o.company, o.location].filter(Boolean).join(" · ")}</small></div>
+                  <span className="live-tag">{o.watch ? "Watching out: not open yet" : o.open ? "Open now" : "Open, check the page"}</span>
+                </div>
+              ))}
+            </section>
+          )}
+        </>
       )}
       {run.phase === "error" && <p className="notice notice-err" role="alert">{run.message}</p>}
       {run.phase === "done" && (
