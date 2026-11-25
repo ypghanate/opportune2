@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
-import PlanLive from "./planlive.jsx";
+import PlanLive from "./planLive.jsx";
 
 const fmtDate = (s) => {
   const d = new Date(s);
@@ -77,6 +77,7 @@ export function ResultsPanel({ items, onApproved, grouped = false }) {
 
   return (
     <div>
+      {busy && <PlanLive steps={steps.slice(0, shown)} total={steps.length} />}
       {pending.length > 0 && (
         <div className="bar">
           <label className="check">
@@ -88,7 +89,6 @@ export function ResultsPanel({ items, onApproved, grouped = false }) {
           </button>
         </div>
       )}
-      {busy && <PlanLive steps={steps.slice(0, shown)} total={steps.length} />}
       {msg && <p className={`notice ${msg.ok ? "" : "notice-err"}`} role={msg.ok ? "status" : "alert"}>{msg.text} {msg.link && <a className="link" href="#/applications">See your applications</a>}</p>}
       {groups.map((g) => (
         <section key={g.key} className="opp-group">

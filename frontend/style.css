@@ -381,3 +381,6 @@ a.dh-stat:hover { outline: 1px solid var(--accent); }
 .live-row small { display: block; color: var(--muted); }
 .live-tag { font-size: .75rem; color: var(--accent); white-space: nowrap; }
 @media (max-width: 600px) { .plan-day { grid-template-columns: 1fr; } }
+
+.live-checking { color: var(--muted); animation: pulse-t 1.2s ease-in-out infinite; }
+@keyframes pulse-t { 50% { opacity: .35; } }

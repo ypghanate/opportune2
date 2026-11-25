@@ -340,7 +340,7 @@ class Scores(BaseModel):
     scores: list[Score]
 
 
-SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "75"))  # seconds for the whole search; each stage adapts to what is left
+SEARCH_BUDGET = float(os.environ.get("SEARCH_BUDGET", "60"))  # seconds for the whole search; each stage adapts to what is left
 SEARCH_CONCURRENCY = 8  # Tavily searches at once
 EXTRACT_BATCH = 10  # search results read per model call
 MAX_SHOWN = 8  # most opportunities returned, best first
@@ -920,16 +920,27 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
 
     # 6. Read each programme's own page: is the link alive, and have applications actually opened?
     pool = entries[: max_results * 4]  # spares, since closed, not-yet-open and dead ones are dropped here
+    # Show the best candidates straight away as "checking", then settle each one as its own page has been read
+    by_url = {}
+    for e in pool[:10]:
+        row = {"title": e["title"], "company": e["company"], "location": e.get("location"), "url": e.get("url"), "state": "checking", "watch": False, "open": False}
+        by_url[e.get("url")] = row
+        shown.append(row)
     say("Checking which are open for applications")
 
-    def preview(e):  # one programme's page has just been read: show it now if it is a good one
+    def preview(e):  # one programme's page has just been read
+        row = by_url.get(e.get("url"))
         if e.get("alive") is False or e.get("open_status") == "closed" or (e.get("for_year") and e["for_year"] < first_year):
-            return
-        watching = e.get("open_status") == "not_yet_open"
-        if len([x for x in shown if not x["watch"]]) >= max_results and not watching:
-            return
-        shown.append({"title": e["title"], "company": e["company"], "location": e.get("location"), "category": e.get("type") or e.get("category"),
-                      "url": e.get("url"), "deadline": None if watching else e.get("deadline"), "watch": watching, "open": e.get("open_status") == "open"})
+            if row in shown:
+                shown.remove(row)  # not open after all: it disappears from the list
+        else:
+            watching = e.get("open_status") == "not_yet_open"
+            if row is None:
+                if len([x for x in shown if x["state"] != "checking"]) >= max_results:
+                    return
+                row = {"title": e["title"], "company": e["company"], "location": e.get("location"), "url": e.get("url")}
+                shown.append(row)
+            row.update(state="watching" if watching else "open", watch=watching, open=e.get("open_status") == "open")
         say("Checking which are open for applications")
 
     await _check_open(pool, now, min(24, max(left(6), 2)), on_item=preview)

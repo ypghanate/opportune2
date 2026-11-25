@@ -79,11 +79,11 @@ export default function Find() {
           <p className="notice" role="status"><span className="spinner" aria-hidden="true" /> {live.stage || "The agent is searching and checking listings."}</p>
           {live.items.length > 0 && (
             <section className="live-found" aria-live="polite">
-              <h2 className="results-h">Found so far</h2>
+              <h2 className="results-h">Found so far, being checked</h2>
               {live.items.map((o, i) => (
                 <div key={`${o.company}-${i}`} className="live-row">
                   <div><strong>{o.title}</strong><small>{[o.company, o.location].filter(Boolean).join(" · ")}</small></div>
-                  <span className="live-tag">{o.watch ? "Watching out: not open yet" : o.open ? "Open now" : "Open, check the page"}</span>
+                  <span className={`live-tag ${o.state === "checking" ? "live-checking" : ""}`}>{o.state === "checking" ? "Checking…" : o.watch ? "Watching out: not open yet" : o.open ? "Open now" : "Open, check the page"}</span>
                 </div>
               ))}
             </section>
