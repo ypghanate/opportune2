@@ -11,8 +11,18 @@ DB_PATH = config.DATA_DIR / "app.db"
 
 # DATABASE_URL (a Postgres address, e.g. from Neon or Supabase) keeps the data outside the server, so a restart or redeploy cannot wipe it.
 # Without it the app uses the local SQLite file, as before (handy on your own computer and for tests).
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+def _clean_url(raw: str) -> str:
+    """Neon's copy button can give "psql 'postgresql://...'" and people paste quotes; keep just the address."""
+    raw = raw.strip()
+    m = re.search(r"postgres(?:ql)?://[^\s'\"]+", raw)
+    return m.group(0) if m else raw
+
+
+DATABASE_URL = _clean_url(os.environ.get("DATABASE_URL", ""))
 PG = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+if os.environ.get("DATABASE_URL", "").strip() and not PG:
+    print("[db] DATABASE_URL is set but is not a Postgres address (it should start with postgresql://). Using the temporary SQLite file instead.", flush=True)
+print(f"[db] storing data in {'Postgres' if PG else 'a local SQLite file'}", flush=True)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
