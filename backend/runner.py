@@ -283,8 +283,6 @@ async def search(user_id: int, profile: dict, cv_path: str, query: str, categori
         else:
             names = ", ".join(i["title"] for i in items[:3])
             message = f"Found {len(items)} opportunities that fit you, including {names}."
-            if len(items) < 5 and diag:
-                message += f" Only a few came through. What happened: {diag}."
         run.status = "done"
         return {"items": items, "message": message}
     except asyncio.TimeoutError:

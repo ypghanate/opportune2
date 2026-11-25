@@ -342,7 +342,7 @@ SEARCH_CONCURRENCY = 8  # Tavily searches at once
 EXTRACT_BATCH = 10  # search results read per model call
 MAX_SHOWN = 8  # most opportunities returned, best first
 LOOSE_MIN_SCORE = 4  # the weakest adjacent match that may fill a thin list
-MIN_WANTED = 5  # below this many results, looser matches are added so the list is not nearly empty
+MIN_WANTED = 4  # below this many results, looser matches are added so the list is not nearly empty
 MAX_WATCH = 3  # programmes that are not open yet and are watched, on top of the open ones
 MAX_RESOLVE = 20  # companies found on list pages that we look up on their own
 
@@ -813,9 +813,7 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
         if c.type not in types:  # only the kinds of programme the student asked for
             dropped["not a wanted type"] += 1
             continue
-        if f"web|{_norm(c.company)}|{c.type}" in known:
-            dropped["already in your opportunities"] += 1
-            continue
+        already_have = f"web|{_norm(c.company)}|{c.type}" in known  # kept aside: only shown if there are too few new ones
         start, deadline = _parse_dt(c.date), _parse_dt(c.deadline)
         if (deadline and deadline < now) or (start and start < now):
             dropped["already closed or started"] += 1
@@ -870,12 +868,11 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             "programme_year": c.programme_year,
             "_snippet": r.get("content", ""),
             "source": "web",
+            "known": already_have,
         })
     lap(f"{len(entries)} distinct open programmes" + (f"  (dropped: {dict(dropped)})" if dropped else ""))
     if dropped:
         trail.append("dropped: " + ", ".join(f"{n} {why}" for why, n in dropped.most_common(5)))
-    if dropped["already in your opportunities"]:
-        trail.append(f"{dropped['already in your opportunities']} you already have in My opportunities are not shown again (clear that list to see them)")
 
     # 5. Narrow down to what fits the student and their search
     scores = await _rank(entries, profile_text, seconds=min(22, left(8)))
@@ -887,7 +884,10 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
     for e in entries:
         if e["match"] == "none" or e["score"] < MIN_SCORE:
             print(f"[search] dropped, not relevant to your interests or search ({e['match']}, {e['score']}/10): {e['company']} - {e.get('field') or e['title'][:50]}", file=sys.stderr)
+    known_pool = sorted([e for e in entries if e.get("known")], key=lambda e: -e["score"])  # already in My opportunities: spares only
+    entries = [e for e in entries if not e.get("known")]
     before_rank = len(entries)
+    ranked_out = sorted([e for e in entries if e["match"] == "none" or e["score"] < MIN_SCORE], key=lambda e: -e["score"])  # spares only
     entries = [e for e in entries if e["match"] != "none" and e["score"] >= MIN_SCORE]
     if before_rank - len(entries):
         trail.append(f"{before_rank - len(entries)} not relevant to your interests or search")
@@ -914,8 +914,18 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             print(f"[search] dropped, applications closed: {e['company']} ({e.get('open_evidence', '')})", file=sys.stderr)
         else:
             usable.append(e)
-    if len(usable) < MIN_WANTED and reserve and left(4) > 4:  # too few: check the looser matches too and add the ones that are open
-        extra = [e for e in reserve if e not in pool][: MIN_WANTED * 3]
+    # Never leave the student with a nearly empty list: fill up to MIN_WANTED from the next-best open programmes, best first.
+    # Each step is only used while there are too few, and the order keeps the closest fit first.
+    tried = {id(e) for e in pool}
+    relevant_known = [e for e in known_pool if e["match"] != "none" and e["score"] >= MIN_SCORE]  # a fit you already have beats an unrelated new one
+    other_known = [e for e in known_pool if e not in relevant_known]
+    for tag, spares in (("loose", reserve), ("known", relevant_known), ("outside", ranked_out), ("known_other", other_known)):
+        if len(usable) >= MIN_WANTED or left(4) <= 4:
+            break
+        extra = [e for e in spares if id(e) not in tried][: (MIN_WANTED - len(usable)) * 3 + 2]
+        tried.update(id(e) for e in extra)
+        if not extra:
+            continue
         await _check_open(extra, now, min(14, max(left(3), 2)))
         for e in extra:
             if e.get("alive") is False or e.get("open_status") == "closed" or (e.get("for_year") and e["for_year"] < first_year):
@@ -923,11 +933,12 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             if e.get("open_status") == "not_yet_open":
                 upcoming.append(e)
             else:
-                e["loose"] = True
+                e["fill"] = tag
                 usable.append(e)
-        lap(f"only a few close matches, so {len([e for e in usable if e.get('loose')])} looser ones were added")
+        lap(f"too few close matches, added from the next best ({tag})")
     # confirmed-open programmes first, then the ones we could not confirm
-    usable.sort(key=lambda e: (e["match"] != "strong", e.get("open_status") != "open", -e["score"], e["deadline"]))
+    FILL_ORDER = {None: 0, "loose": 1, "known": 2, "outside": 3, "known_other": 4}
+    usable.sort(key=lambda e: (FILL_ORDER[e.get("fill")], e["match"] != "strong", e.get("open_status") != "open", -e["score"], e["deadline"]))
     kept = usable[:max_results]
     gone = len(pool) - len([e for e in pool if e in usable or e in upcoming])
     if gone:
@@ -942,9 +953,9 @@ Also list 25 to 30 real employers, names only, that run the wanted programme typ
             groups = [GROUP_WORDS[g] for g in e["restricted_to"] if g in GROUP_WORDS]
             if groups:
                 notes.append("Check you qualify: for " + ", ".join(groups) + ".")
-        if e.get("loose"):
-            notes.append("A looser match for your interests.")
-        e["note"] = " ".join(notes)
+        notes.append({"loose": "A looser match for your interests.", "outside": "Outside your usual interests, shown so you have enough to choose from.",
+                      "known": "Already in My opportunities.", "known_other": "Already in My opportunities."}.get(e.get("fill"), ""))
+        e["note"] = " ".join(n for n in notes if n)
         e.pop("_snippet", None)
         print(f"[search] returned ({e['match']}, {e['score']}/10, {e.get('open_status', 'unknown')}): {e['company']} - {e['title'][:50]} [{e.get('field', '')}]", file=sys.stderr)
     for e in upcoming[:MAX_WATCH]:
