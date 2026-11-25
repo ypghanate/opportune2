@@ -9,16 +9,19 @@ const WHAT = [
 ];
 
 const AGENTS = [
-  { name: "Researcher", role: "Finds opportunities for you", tag: "Live", points: ["Searches the web for spring weeks and internships", "Drops closed, wrong-year and out-of-area listings", "Looks again every 2 hours"] },
-  { name: "Planner Agent", role: "Takes care of everything else", tag: "Live", main: true, points: ["Suggests the good finds, or says why it would skip one", "Books every stage in your calendar", "Moves sessions when something clashes", "Chases you when you go quiet"] },
+  { name: "Researcher", role: "Finds opportunities for you", tag: "Live", points: ["Searches the web for spring weeks and internships", "Keeps the ones that fit you, one per company", "Drops closed, wrong-year and out-of-area listings", "Looks again every 2 hours"] },
+  { name: "Scheduler", role: "Finds the right time for every step", tag: "Live", points: ["Books an apply block and practice sessions", "Works around every event in your calendar", "Keeps clear of exams and interviews", "Never piles more than three blocks on a day"] },
+  { name: "Planner", role: "Keeps your plan working", tag: "Live", points: ["Reads your whole plan when something changes", "Moves sessions when something clashes", "Never moves an interview", "Tells you what it changed and why"] },
+  { name: "Autopilot", role: "Runs it all in the background", tag: "Live", main: true, points: ["Watches programmes that have not opened yet", "Books them the moment applications open", "Brings you suggestions in a pop-up", "Chases you when you go quiet"] },
   { name: "Application Filler", role: "Fills in the forms for you", tag: "Coming soon", soon: true, points: ["Reads your CV and profile", "Pre-fills application forms", "You review before anything is sent"] },
 ];
 
 const SYNC = [
   ["Researcher finds", "New programmes that fit your interests"],
-  ["Planner reviews", "Recommends it, or tells you why not"],
   ["You approve", "One tap in the pop-up"],
-  ["Planner looks after it", "Books, reschedules, chases"],
+  ["Scheduler books", "Apply and practice blocks in your free time"],
+  ["Planner looks after it", "Moves sessions when things change"],
+  ["Autopilot keeps watch", "Opens, chases and suggests"],
 ];
 
 const STEPS = [
@@ -61,7 +64,7 @@ export default function Overview({ authed }) {
 
       <section className="wrap section" aria-labelledby="auto">
         <h2 id="auto">Meet your agents</h2>
-        <p className="lede">Your personal agent ecosystem for all your applications. Two agents work together, a third is on the way, and you only make the decisions.</p>
+        <p className="lede">Your personal agent ecosystem for all your applications. Four agents work together, a fifth is on the way, and you only make the decisions.</p>
         <div className="agents">
           {AGENTS.map((a) => (
             <article className={`agent-card${a.main ? " main" : ""}${a.soon ? " soon" : ""}`} key={a.name}>
@@ -77,7 +80,7 @@ export default function Overview({ authed }) {
             <li key={t}><strong>{t}</strong><span>{d}</span></li>
           ))}
         </ol>
-        <p className="muted sync-note">They share one picture of your plan, so the Researcher never suggests something that clashes and the Planner always knows what is new. Interviews are never moved.</p>
+        <p className="muted sync-note">The Autopilot runs the others in the background. They share one picture of your plan, so the Researcher never suggests something that clashes and the Planner always knows what is new. Interviews are never moved.</p>
       </section>
 
       <section className="wrap section" id="how" aria-labelledby="how-h">
