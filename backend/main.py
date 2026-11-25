@@ -121,6 +121,12 @@ class ProfileIn(_Checked):
     autopilot: bool = True  # lets the agent move, rebook and book things on its own
 
 
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health():
+    """For an uptime pinger: answers instantly and touches nothing, so it keeps a sleeping free server awake."""
+    return {"ok": True}
+
+
 @app.get("/api/profile")
 def get_profile(user=Depends(current_user)):
     profile, cv_path = db.get_profile(user["id"])
