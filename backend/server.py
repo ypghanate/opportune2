@@ -743,11 +743,15 @@ async def search_opportunities(
     notes: list[str] = []  # the agent's thinking, in plain words, in order
     looking: dict = {"queries": [], "employers": []}  # what it is searching for, exactly
 
-    def say(stage):
+    phase = {"n": 0}  # 0 planning, 1 searching, 2 reading, 3 ranking, 4 checking
+
+    def say(stage, step=None):
+        if step is not None:
+            phase["n"] = step
         if stage and (not notes or notes[-1] != stage):
             notes.append(stage)
-        progress.write("search", {"stage": stage, "items": shown, "notes": notes[-12:], "queries": looking["queries"],
-                                  "employers": looking["employers"], "done": False})
+        progress.write("search", {"stage": stage, "items": shown, "notes": notes[-14:], "queries": looking["queries"],
+                                  "employers": looking["employers"], "phase": phase["n"], "done": False})
 
     def lap(text, keep=True):
         print(f"[search] {text} ({time_module.monotonic() - began:.0f}s)", file=sys.stderr)
@@ -762,7 +766,8 @@ async def search_opportunities(
     grad = str(eligibility_info.get("graduation_year") or "")
     location = eligibility_info.get("location") or "United Kingdom"
     stage_text, stage_ok, stage_avoid = _student_stage(eligibility_info, now)
-    say(f"Reading your request: \"{(query or 'find opportunities for me')[:120]}\". Working out what to search for")
+    say(f"Reading your request: \"{(query or 'find opportunities for me')[:120]}\"", 0)
+    say(f"You are a {stage_text} in {location}, interested in {interests or 'a range of fields'}")
     profile_text = f"""Student: {stage_text} ({eligibility_info.get('year_of_study') or 'year not given'}) studying {eligibility_info.get('degree') or 'an unknown degree'} at {eligibility_info.get('university') or 'an unknown university'}, graduating {grad or 'unknown'}, based in {location}.
 Interests: {interests or 'not given'}.
 Types wanted: {', '.join(types)}.
@@ -793,6 +798,16 @@ Do not repeat yourself; each query should find different programmes.
 RELEVANCE IS STRICT. Work out the student's target fields: the search request if it names a field, sector, company or city; otherwise their interests; if neither is given, their degree and CV. Every query and every employer must serve those fields. For example, for a student interested in software engineering write queries such as "software engineering spring insight 2027" and list technology companies and the technology divisions of banks, and do NOT write finance, banking, consulting or trading queries or employers. For a quant or finance student, do the opposite.
 
 Also list 18 to 22 real employers, names only, that run the wanted programme types for a student at this stage (only employers whose programmes are in the TARGET FIELDS above, for example trading firms, market makers and quant hedge funds for a quant student; do not pad the list with banks, consultancies, law firms or tech companies that run nothing in those fields), most relevant first. Only companies you are confident exist and recruit in the UK or the student's location. These are looked up on the web afterwards, so leave out any you are unsure about."""
+    # Start searching at once with the obvious queries while the model works out the cleverer ones
+    year = now.year + 1
+    basic = [f"{t} {year} {location}" for t in types]
+    basic += [f"{i.strip()} {types[0]} {year}" for i in interests.split(",")[:3] if i.strip() and i.strip().lower() != "not given"]
+    if query and len(query.strip()) > 12:
+        basic.append(f"{query.strip()[:90]} {year}")
+    basic = list(dict.fromkeys(basic))[:6]
+    looking["queries"] = list(basic)
+    say(f"Searching the web now ({len(basic)} searches) while I plan more", 1)
+    basic_job = asyncio.ensure_future(_search_many(basic, per_query=10, seconds=14))
     try:
         plan = await asyncio.wait_for(ask([{"role": "system", "content": plan_system},
                                            {"role": "user", "content": query or "Find opportunities for me"}], SearchPlan, model=FAST_MODEL), 10)
@@ -806,22 +821,33 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
         queries = [f"{t} {now.year + 1} {location}" for t in types] + [f"{i.strip()} {types[0]} {now.year + 1}" for i in interests.split(",")[:6]]
     for q in queries:
         print(f"[search] query: {q}", file=sys.stderr)
-    looking["queries"], looking["employers"] = queries, employers[:15]
+    queries = [q for q in queries if q not in basic]  # the first ones are already running
+    looking["queries"], looking["employers"] = basic + queries, employers[:15]
     for n in employers[:8]:  # the employers it is going to look at, shown at once
         shown.append({"title": "Programme being looked up", "company": n, "location": None, "url": None, "state": "considering", "watch": False, "open": False})
-    say(f"Searching the web with {len(queries)} different searches" + (f" and looking up {len(employers)} employers directly" if employers else ""))
+    say(f"Planned {len(queries)} more searches" + (f" and looking up {len(employers)} employers directly" if employers else ""))
 
     wanted = types[0] if types[0] in Candidate.model_fields["type"].annotation.__args__ else "internship"
     stage_word = STAGE_WORDS.get(next(iter(stage_ok - {"any_undergraduate"}), ""), "")
     stubs = [Candidate(index=0, company=n, title="", type=wanted, page_is_this_company_only=False, location="Unknown") for n in employers]
     print(f"[search] {len(stubs)} employers to look up directly", file=sys.stderr)
-    employer_job = asyncio.ensure_future(_resolve_many(stubs, context, now.year + 1, stage_word, " or ".join(types), min(34, left(40)))) if stubs else None
+    employer_job = asyncio.ensure_future(_resolve_many(stubs, context, now.year + 1, stage_word, " or ".join(types), min(30, max(left(24), 8)))) if stubs else None
 
-    results = await _search_many(queries, per_query=10, seconds=min(16, left(50)))
-    lap(f"{len(results)} unique pages from {len(queries)} searches")
+    more = await _search_many(queries, per_query=10, seconds=min(14, max(left(36), 6))) if queries else []
+    try:
+        first = await asyncio.wait_for(asyncio.shield(basic_job), 3)
+    except Exception:
+        first = []
+    seen_urls, results = set(), []
+    for r in list(first) + list(more):
+        if r.get("url") not in seen_urls:
+            seen_urls.add(r.get("url"))
+            results.append(r)
+    lap(f"Read {len(results)} pages from {len(basic) + len(queries)} searches")
+    say("Pulling out each company's programme", 2)
 
     # 2. One entry per company programme
-    found = await _extract(results, context, seconds=min(20, left(30))) if results else []
+    found = await _extract(results, context, seconds=min(16, max(left(22), 6))) if results else []
     lap(f"{len(found)} company programmes mentioned")
 
     # 3. Companies only seen on list pages: look up each one's own page, all together
@@ -835,7 +861,7 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
             queued.add(key)
             to_resolve.append(c)
     try:
-        resolved = await _resolve_many(to_resolve[:20], context, now.year + 1, stage_word, " or ".join(types), min(14, left(24))) if (to_resolve and left(24) > 6) else []
+        resolved = await _resolve_many(to_resolve[:20], context, now.year + 1, stage_word, " or ".join(types), min(10, max(left(14), 4))) if (to_resolve and left(14) > 5) else []
     except Exception as e:
         print(f"[search] list-page lookups failed: {e}", file=sys.stderr)
         resolved = []
@@ -938,8 +964,8 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
     say(f"Found {len(entries)} programmes. Picking the ones that fit you")
 
     # 5. Narrow down to what fits the student and their search
-    say(f"Found {len(entries)} programmes. Picking the ones that fit you")
-    scores = await _rank(entries, profile_text, seconds=min(22, left(8)))
+    say(f"Found {len(entries)} programmes. Picking the ones that fit you", 3)
+    scores = await _rank(entries, profile_text, seconds=min(14, max(left(16), 6)))
     for n, e in enumerate(entries):
         s = scores.get(n)
         e["score"], e["why"] = (s.score, s.reason) if s else (3, "")
@@ -972,7 +998,7 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
         row = {"title": e["title"], "company": e["company"], "location": e.get("location"), "url": e.get("url"), "state": "checking", "watch": False, "open": False}
         by_url[e.get("url")] = row
         shown.append(row)
-    say("Checking which are open for applications")
+    say("Checking which are open for applications", 4)
 
     def preview(e):  # one programme's page has just been read
         row = by_url.get(e.get("url"))
@@ -989,7 +1015,7 @@ Also list 18 to 22 real employers, names only, that run the wanted programme typ
             row.update(state="watching" if watching else "open", watch=watching, open=e.get("open_status") == "open")
         say("Checking which are open for applications")
 
-    await _check_open(pool, now, min(24, max(left(6), 2)), on_item=preview)
+    await _check_open(pool, now, min(18, max(left(4), 4)), on_item=preview)
     usable, upcoming = [], []
     for e in pool:
         status = e.get("open_status", "unknown")
