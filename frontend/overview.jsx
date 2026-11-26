@@ -11,12 +11,11 @@ const WHAT = [
 const AGENTS = [
   { name: "Researcher", role: "Finds opportunities for you", tag: "Live", points: ["Searches the web for spring weeks and internships", "Keeps the ones that fit you, one per company", "Drops closed, wrong-year and out-of-area listings", "Looks again every 2 hours"] },
   { name: "Scheduler", role: "Finds the right time for every step", tag: "Live", points: ["Books an apply block and practice sessions", "Works around every event in your calendar", "Keeps clear of exams and interviews", "Never piles more than three blocks on a day"] },
-  { name: "Planner Agent", role: "Keeps your plan working, in the background", tag: "Live", main: true, points: [
-    "Fixes clashes: moves a session when something new lands on it",
-    "Makes room on purpose, for example before an exam or assessment",
-    "Books programmes the moment they open, and recommends new finds or says why it would skip one",
-    "Nudges you when a session ends and you have not said how it went",
-    "Asks you a short question when it is not sure",
+  { name: "Planner Agent", role: "Maintains your plan, in the background", tag: "Live", main: true, points: [
+    "Fixes any clashes automatically",
+    "Books or suggests programmes to you as soon as they open",
+    "Smartly makes room, deliberately, before an exam or assignment",
+    "Nudges you when a session ends and you have not responded",
   ] },
   { name: "Application Filler", role: "Fills in the forms for you", tag: "Coming soon", soon: true, points: ["Reads your CV and profile", "Pre-fills application forms", "You review before anything is sent"] },
 ];

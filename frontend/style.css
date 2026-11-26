@@ -453,3 +453,24 @@ a.dh-stat:hover { outline: 1px solid var(--accent); }
 }
 .agent-card.main h3 { font-size: 1.6rem; }
 .agent-card ul { align-content: start; }
+
+/* the three live agents sit in one row and are the same height; the Planner is the widest */
+.agents { align-items: stretch; }
+.agent-card { height: 100%; }
+@media (min-width: 960px) {
+  .agent-card.main ul { margin-top: auto; padding-top: 14px; }
+}
+
+/* exact widths: Planner = half of the row, Researcher and Scheduler = a quarter each (minmax(0, …) stops long text from widening a card) */
+@media (min-width: 960px) {
+  .agents { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* three live agents, a third of the row each; the Filler is the slim banner underneath */
+@media (min-width: 960px) {
+  .agents { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .agent-card.main { grid-column: auto; }
+  .agent-card.main ul { grid-template-columns: 1fr; margin-top: auto; padding-top: 0; }
+  .agent-card.main h3 { font-size: 1.35rem; }
+  .agent-card.soon { grid-column: 1 / -1; }
+}
