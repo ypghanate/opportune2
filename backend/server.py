@@ -1274,14 +1274,40 @@ def _summary_of(item: dict) -> str:
     return item.get("summary") or f"{LABELS.get(_kind_of(item), 'Apply')}: {item.get('title')}"
 
 
+_CAL_LOCKS: dict = {}
+_CAL_OWNER: dict = {}
+
+
+async def _calendar_owner() -> str:
+    """Which Google calendar this is, so two plans for the SAME calendar (even from two Opportune accounts) take turns."""
+    token = TOKEN.get() or os.environ.get("GOOGLE_TOKEN_JSON") or "dev"
+    if token in _CAL_OWNER:
+        return _CAL_OWNER[token]
+    try:
+        service = await asyncio.to_thread(get_calendar_service)
+        info = await asyncio.to_thread(lambda: service.calendarList().get(calendarId=CALENDAR_ID).execute())
+        owner = str(info.get("id") or CALENDAR_ID)
+    except Exception:
+        owner = f"token:{hash(token)}"
+    _CAL_OWNER[token] = owner
+    return owner
+
+
 async def _schedule_blocks(items: list[dict]) -> list[dict]:
-    """Finds a slot for every block (see _find_slots), then puts all the new events into Google Calendar in one batch request."""
-    queued: list = []
-    t0 = time_module.monotonic()
-    results = await _find_slots(items, queued)
-    await _flush_inserts(queued, results)
-    print(f"[plan] {len(queued)} events written to Google Calendar, all done ({time_module.monotonic() - t0:.1f}s in total)", file=sys.stderr)
-    return results
+    """Finds a slot for every block (see _find_slots), then puts all the new events into Google Calendar in one batch request.
+    Plans for the same calendar run one at a time: two at once would both read the calendar before either had written to it,
+    and both pick the same free slot."""
+    lock = _CAL_LOCKS.setdefault(await _calendar_owner(), asyncio.Lock())
+    t_wait = time_module.monotonic()
+    async with lock:
+        if time_module.monotonic() - t_wait > 0.5:
+            print(f"[plan] waited {time_module.monotonic() - t_wait:.1f}s for another plan on this calendar to finish", file=sys.stderr)
+        queued: list = []
+        t0 = time_module.monotonic()
+        results = await _find_slots(items, queued)
+        await _flush_inserts(queued, results)
+        print(f"[plan] {len(queued)} events written to Google Calendar, all done ({time_module.monotonic() - t0:.1f}s in total)", file=sys.stderr)
+        return results
 
 
 async def _flush_inserts(queued: list, results: list[dict]) -> None:
