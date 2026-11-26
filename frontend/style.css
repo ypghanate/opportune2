@@ -442,3 +442,14 @@ a.dh-stat:hover { outline: 1px solid var(--accent); }
 .pill-watch { background: rgba(255,200,87,.18); color: #ffd27a; }
 @media (max-width: 700px) { .ag-cols { grid-template-columns: 1fr; } .ag-found ul { grid-template-columns: 1fr; } .ag { padding: 16px; } }
 @media (prefers-reduced-motion: reduce) { .ag-orb, .ag-spin, .ag-steps li.now .ag-dot, .pill-wait { animation: none; } }
+
+/* agent cards: Planner is wider because it does the most; the Filler sits underneath as a slim banner */
+@media (min-width: 960px) {
+  .agents { grid-template-columns: repeat(4, 1fr); }
+  .agent-card.main { grid-column: span 2; }
+  .agent-card.main ul { grid-template-columns: 1fr 1fr; column-gap: 28px; margin-top: 14px; }
+  .agent-card.soon { grid-column: 1 / -1; }
+  .agent-card.soon ul { grid-template-columns: repeat(3, 1fr); column-gap: 28px; margin-top: 10px; }
+}
+.agent-card.main h3 { font-size: 1.6rem; }
+.agent-card ul { align-content: start; }
